@@ -100,6 +100,43 @@ def get_fear_and_greed_index():
     fetched_at = datetime.utcnow()
     return value, label, fetched_at
 
+@st.cache_data(ttl=300)  # 5 dakikada bir tazelensin
+def get_crypto_market_overview():
+    """
+    CoinGecko 'global' endpoint üzerinden kripto piyasa özetini çeker.
+    - BTC / ETH dominansı
+    - Toplam market cap & hacim
+    - Altcoin dominansı (100 - BTC)
+    """
+    url = "https://api.coingecko.com/api/v3/global"
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json().get("data", {})
+
+        mcap_perc = data.get("market_cap_percentage", {}) or {}
+        btc_dom = mcap_perc.get("btc")
+        eth_dom = mcap_perc.get("eth")
+
+        total_mcap = data.get("total_market_cap", {}).get("usd")
+        total_volume = data.get("total_volume", {}).get("usd")
+        mcap_change_24h = data.get("market_cap_change_percentage_24h_usd")
+
+        alt_dom = 100.0 - btc_dom if isinstance(btc_dom, (int, float)) else None
+
+        fetched_at = datetime.utcnow()
+        return {
+            "btc_dom": btc_dom,
+            "eth_dom": eth_dom,
+            "alt_dom": alt_dom,
+            "total_mcap": total_mcap,
+            "total_volume": total_volume,
+            "mcap_change_24h": mcap_change_24h,
+            "fetched_at": fetched_at,
+        }
+    except Exception:
+        return None
+
 @st.cache_data(ttl=3600)
 def get_mock_macro_events():
     today = datetime.now()
@@ -155,6 +192,24 @@ def create_gauge_chart(value, label):
         margin=dict(l=10, r=10, t=30, b=10),
     )
     return fig
+
+def format_usd_compact(value):
+    """Büyük USD değerlerini (market cap vs.) kompakt formatlar."""
+    if value is None:
+        return "-"
+    try:
+        v = float(value)
+    except Exception:
+        return "-"
+    abs_v = abs(v)
+    if abs_v >= 1_000_000_000_000:  # trilyon
+        return f"${v/1_000_000_000_000:.2f} T"
+    elif abs_v >= 1_000_000_000:     # milyar
+        return f"${v/1_000_000_000:.2f} B"
+    elif abs_v >= 1_000_000:         # milyon
+        return f"${v/1_000_000:.2f} M"
+    else:
+        return f"${v:,.0f}"
 
 def configure_gemini(api_key: str):
     """Sadece configure eder, validasyon ayrı yapılıyor."""
@@ -234,10 +289,27 @@ def get_gemini_model(api_key: str, preferred_pattern: str):
     )
     return None, err_msg, None
 
+def build_global_market_context():
+    """F&G + CoinGecko verilerini, AI'e beslemek için text'e çevirir."""
+    fg_val, fg_lbl, fg_time = get_fear_and_greed_index()
+    mkt = get_crypto_market_overview()
+    lines = []
+    lines.append(f"Global Crypto Fear & Greed Index şu anda {fg_val} ({fg_lbl}).")
+    if mkt:
+        if isinstance(mkt.get("btc_dom"), (int, float)):
+            lines.append(f"BTC dominansı yaklaşık %{mkt['btc_dom']:.2f} seviyesinde.")
+        if isinstance(mkt.get("eth_dom"), (int, float)):
+            lines.append(f"ETH dominansı yaklaşık %{mkt['eth_dom']:.2f} seviyesinde.")
+        if isinstance(mkt.get("alt_dom"), (int, float)):
+            lines.append(f"Altcoin dominansı kabaca %{mkt['alt_dom']:.2f} civarında.")
+        if isinstance(mkt.get("mcap_change_24h"), (int, float, float)):
+            lines.append(f"Toplam market cap'in 24 saatlik değişimi %{mkt['mcap_change_24h']:.2f} civarında.")
+    return "\n".join(lines)
+
 def analyze_chart_with_gemini(model, image: Image.Image, extra_context: str = "") -> str:
     """
     Tradingview / kripto grafiği için Türkçe teknik analiz prompt'u.
-    Güvenlik vurgusu eklenmiş hali.
+    Güvenlik vurgusu + küresel kabul görmüş teknikler eklendi.
     """
     safety_header = """
     ÇOK ÖNEMLİ TALİMATLAR:
@@ -246,14 +318,29 @@ def analyze_chart_with_gemini(model, image: Image.Image, extra_context: str = ""
     - Cevaplarının yatırım tavsiyesi değil, eğitim amaçlı bir analiz örneği olduğunu belirt.
     """
 
+    methodology_block = """
+    Analiz yaparken, küresel olarak kabul görmüş finansal ve teknik analiz prensiplerini kullan:
+    - Dow Teorisi ve trend analizi (yükselen/düşen tepeler ve dipler)
+    - Destek/direnç, arz-talep bölgeleri
+    - Momentum göstergeleri (RSI, MACD, Stokastik) mantığını kullanarak aşırı alım/aşırı satım bölgelerini yorumla
+    - Volatilite ölçümü (Bollinger Bands, ATR) kavramlarını kullanarak stop mesafesi ve hedef aralıklarını değerlendir
+    - Hacim analizi: kırılımların hacimle desteklenip desteklenmediğini yorumla
+    - Risk/Ödül (R/R) oranına dikkat et; en az 1:2 gibi bir denge hedefle
+    - Pozisyon büyüklüğü ve maksimum sermaye riski gibi risk yönetimi prensiplerine referans ver
+    - BTC dominansı, altcoin dominansı ve toplam piyasa duyarlılığını (Fear & Greed) genel bağlam olarak dikkate al
+    """
+
     base_prompt = f"""
     {safety_header}
 
     Sen deneyimli bir Türk teknik analist ve kripto trader'sın.
 
+    {methodology_block}
+
     Aşağıdaki fiyat grafiğini analiz et ve cevaplarını mümkün olduğunca
     sayısal seviyelerle ve maddeler halinde ver.
 
+    Ek bağlam (kullanıcı notu + piyasa verileri):
     {extra_context}
 
     Cevap formatı:
@@ -261,6 +348,7 @@ def analyze_chart_with_gemini(model, image: Image.Image, extra_context: str = ""
     1️⃣ Trend:
     - Genel trend yönü (Boğa / Ayı / Yatay)
     - Kısa, orta ve uzun vade için yorum
+    - Dow teorisine göre tepe/dip yapısı hakkında kısa not
 
     2️⃣ Destek & Direnç:
     - En az 3 ana destek seviyesi (sadece rakam, gerekiyorsa aralıkla)
@@ -272,13 +360,16 @@ def analyze_chart_with_gemini(model, image: Image.Image, extra_context: str = ""
     - Formasyonun hedef fiyat bölgesi (varsa)
     - Formasyon ne aşamada? (oluşum, kırılım, retest, başarısız vs.)
 
-    4️⃣ İşlem Stratejisi:
+    4️⃣ Momentum & Volatilite:
+    - RSI/MACD mantığıyla aşırı alım/aşırı satım bölgesi tahmini yap
+    - Volatilite yüksek mi, düşük mü? Stop mesafeleri buna göre nasıl ayarlanmalı?
+
+    5️⃣ İşlem Stratejisi:
     - Olası AL stratejisi (giriş bölgesi, stop, ilk ve ikinci TP)
     - Olası SAT / SHORT stratejisi (varsa)
-    - Risk yönetimi önerisi (max risk %, volatilite yorumu)
-    - Gereksiz agresif öneriler verme, temkinli ol.
+    - Risk yönetimi önerisi (max risk %, R/R oranı, pozisyon küçültme)
 
-    5️⃣ Risk Uyarıları:
+    6️⃣ Risk Uyarıları:
     - Grafikte dikkat çeken anormal hareketler (ani spike, likidite boşluğu vs.)
     - Haber, makro, FED vb. dış faktörlere karşı genel uyarı
     """
@@ -485,6 +576,10 @@ if uploaded_files:
 
                         st.session_state.request_count += len(uploaded_files)
 
+                        # Piyasa bağlamını sadece bir kez üret
+                        global_ctx = build_global_market_context()
+                        combined_extra = (extra_notes or "") + "\n\n" + global_ctx
+
                         st.markdown("---")
                         st.subheader("🧠 Yapay Zeka Analizleri")
 
@@ -518,7 +613,7 @@ if uploaded_files:
                                         text = analyze_chart_with_gemini(
                                             model=model,
                                             image=image,
-                                            extra_context=extra_notes
+                                            extra_context=combined_extra
                                         )
                                         st.markdown(text)
                                     except Exception as e:
@@ -598,7 +693,7 @@ with st.expander("🌍 Piyasa Paneli", expanded=False):
         # Manuel yenileme butonu (cache temizleyip yeniden çekiyoruz)
         if st.button("🔄 F&G Verisini Yenile"):
             get_fear_and_greed_index.clear()
-            st.rerun()  # <--- BURASI GÜNCELLENDİ
+            st.rerun()
 
         val, lbl, fetched_at = get_fear_and_greed_index()
         st.plotly_chart(create_gauge_chart(val, lbl), use_container_width=True)
@@ -608,13 +703,50 @@ with st.expander("🌍 Piyasa Paneli", expanded=False):
         )
 
     with cm2:
-        df = get_mock_macro_events()
-        st.markdown("#### Yaklaşan Makro Veriler (Örnek)")
-        for _, r in df.iterrows():
-            st.warning(
-                f"**{r['date'].strftime('%d %b %Y')} {r['time']}** - "
-                f"{r['currency']} - {r['event']} "
-                f"(Beklenti: {r['forecast']})"
-            )
+        tab1, tab2 = st.tabs(["Kripto Piyasa Özeti", "Makro Gündem"])
+
+        with tab1:
+            mkt = get_crypto_market_overview()
+            if not mkt:
+                st.warning("Piyasa verileri şu anda çekilemedi. Birkaç dakika sonra tekrar deneyin.")
+            else:
+                cA, cB, cC = st.columns(3)
+                if isinstance(mkt.get("btc_dom"), (int, float)):
+                    cA.metric("BTC Dominance", f"{mkt['btc_dom']:.2f}%")
+                else:
+                    cA.metric("BTC Dominance", "-")
+
+                if isinstance(mkt.get("alt_dom"), (int, float)):
+                    cB.metric("Altcoin Dominance (≈)", f"{mkt['alt_dom']:.2f}%")
+                else:
+                    cB.metric("Altcoin Dominance (≈)", "-")
+
+                if isinstance(mkt.get("eth_dom"), (int, float)):
+                    cC.metric("ETH Dominance", f"{mkt['eth_dom']:.2f}%")
+                else:
+                    cC.metric("ETH Dominance", "-")
+
+                cD, cE, cF = st.columns(3)
+                cD.metric("Toplam Market Cap", format_usd_compact(mkt.get("total_mcap")))
+                cE.metric("24h Hacim", format_usd_compact(mkt.get("total_volume")))
+                if isinstance(mkt.get("mcap_change_24h"), (int, float, float)):
+                    cF.metric("Market Cap 24h %", f"{mkt['mcap_change_24h']:.2f}%")
+                else:
+                    cF.metric("Market Cap 24h %", "-")
+
+                st.caption(
+                    "Veri kaynağı: CoinGecko Global API  \n"
+                    f"Güncelleme zamanı (UTC): {mkt['fetched_at'].strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+
+        with tab2:
+            df = get_mock_macro_events()
+            st.markdown("#### Yaklaşan Makro Veriler (Örnek)")
+            for _, r in df.iterrows():
+                st.warning(
+                    f"**{r['date'].strftime('%d %b %Y')} {r['time']}** - "
+                    f"{r['currency']} - {r['event']} "
+                    f"(Beklenti: {r['forecast']})"
+                )
 
 st.caption("⚠️ Buradaki tüm analizler eğitim amaçlıdır, yatırım tavsiyesi değildir.")
