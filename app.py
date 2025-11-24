@@ -1131,6 +1131,14 @@ with tab_live:
                 "Solana (SOL)",
                 "XRP",
                 "Dogecoin (DOGE)",
+                "Cardano (ADA)",
+                "Toncoin (TON)",
+                "Chainlink (LINK)",
+                "Pepe (PEPE)",
+                "Shiba Inu (SHIB)",
+                "Optimism (OP)",
+                "Arbitrum (ARB)",
+                "Pi Network (PI)",
             ],
             index=0
         )
@@ -1158,6 +1166,14 @@ with tab_live:
             "Solana (SOL)": "SOLUSDT",
             "XRP": "XRPUSDT",
             "Dogecoin (DOGE)": "DOGEUSDT",
+            "Cardano (ADA)": "ADAUSDT",
+            "Toncoin (TON)": "TONUSDT",
+            "Chainlink (LINK)": "LINKUSDT",
+            "Pepe (PEPE)": "PEPEUSDT",
+            "Shiba Inu (SHIB)": "SHIBUSDT",
+            "Optimism (OP)": "OPUSDT",
+            "Arbitrum (ARB)": "ARBUSDT",
+            # "Pi Network (PI)" bilinçli olarak eklenmedi → API'de genelde yok / IOU
         }
 
         okx_inst_map = {
@@ -1167,6 +1183,14 @@ with tab_live:
             "Solana (SOL)": "SOL-USDT",
             "XRP": "XRP-USDT",
             "Dogecoin (DOGE)": "DOGE-USDT",
+            "Cardano (ADA)": "ADA-USDT",
+            "Toncoin (TON)": "TON-USDT",
+            "Chainlink (LINK)": "LINK-USDT",
+            "Pepe (PEPE)": "PEPE-USDT",
+            "Shiba Inu (SHIB)": "SHIB-USDT",
+            "Optimism (OP)": "OP-USDT",
+            "Arbitrum (ARB)": "ARB-USDT",
+            # "Pi Network (PI)" yok
         }
 
         okx_bar_map = {
@@ -1183,12 +1207,20 @@ with tab_live:
                 df_ohlc = None
 
                 if exchange_live == "Binance":
-                    symbol = binance_symbol_map[coin_choice]
-                    df_ohlc = get_ohlc_binance(symbol, interval=interval, limit=limit)
+                    if coin_choice not in binance_symbol_map:
+                        st.error("Bu coin için Binance OHLC verisi desteklenmiyor (örn. Pi Network).")
+                        df_ohlc = None
+                    else:
+                        symbol = binance_symbol_map[coin_choice]
+                        df_ohlc = get_ohlc_binance(symbol, interval=interval, limit=limit)
                 else:
-                    inst_id = okx_inst_map[coin_choice]
-                    bar = okx_bar_map[interval]
-                    df_ohlc = get_ohlc_okx(inst_id, bar=bar, limit=limit)
+                    if coin_choice not in okx_inst_map:
+                        st.error("Bu coin için OKX OHLC verisi desteklenmiyor (örn. Pi Network).")
+                        df_ohlc = None
+                    else:
+                        inst_id = okx_inst_map[coin_choice]
+                        bar = okx_bar_map[interval]
+                        df_ohlc = get_ohlc_okx(inst_id, bar=bar, limit=limit)
 
                 if df_ohlc is None or df_ohlc.empty:
                     st.error("OHLC verisi alınamadı. Bir süre sonra tekrar deneyin.")
