@@ -172,18 +172,73 @@ def get_crypto_market_overview():
     except Exception:
         return None
 
-@st.cache_data(ttl=300)
-def get_ohlc_data(coin_id: str, vs_currency: str = "usd", days: int = 1):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {"vs_currency": vs_currency, "days": days}
+# -------------------------------------------------------------------------
+# BINANCE & OKX OHLC VERİ ÇEKME (CANLI)
+# -------------------------------------------------------------------------
+@st.cache_data(ttl=60)
+def get_ohlc_binance(symbol: str, interval: str = "1h", limit: int = 200):
+    """
+    Binance spot/futures sembolü için OHLC verisi çeker.
+    Örn: symbol='BTCUSDT', interval='1h', limit=200
+    """
+    url = "https://api.binance.com/api/v3/klines"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
     try:
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         raw = r.json()
         if not raw:
             return None
-        df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close"])
-        df["time"] = pd.to_datetime(df["time"], unit="ms")
+        data = []
+        for k in raw:
+            data.append({
+                "time": pd.to_datetime(k[0], unit="ms"),
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            })
+        df = pd.DataFrame(data)
+        df = df.sort_values("time")
+        return df
+    except Exception:
+        return None
+
+@st.cache_data(ttl=60)
+def get_ohlc_okx(inst_id: str, bar: str = "1H", limit: int = 200):
+    """
+    OKX sembolü için OHLC verisi çeker.
+    Örn: inst_id='BTC-USDT', bar='1H', limit=200
+    """
+    url = "https://www.okx.com/api/v5/market/candles"
+    params = {
+        "instId": inst_id,
+        "bar": bar,       # '1m','5m','15m','1H','4H','1D' vb.
+        "limit": limit
+    }
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        raw = r.json().get("data", [])
+        if not raw:
+            return None
+        data = []
+        for k in raw:
+            data.append({
+                "time": pd.to_datetime(int(k[0]), unit="ms"),
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            })
+        df = pd.DataFrame(data)
+        df = df.sort_values("time")
         return df
     except Exception:
         return None
@@ -993,9 +1048,6 @@ with tab_tools:
                         "liq_price": liq_price_val,
                     })
                     st.success("✅ Bu hesaplama history'e eklendi.")
-            # price_risk != 0
-        # all inputs ok
-    # expander
 
     st.markdown("### 🌍 Piyasa Paneli")
     with st.expander("Global Duyarlılık & Makro (Örnek)", expanded=False):
@@ -1057,14 +1109,20 @@ with tab_tools:
                         f"{r['currency']} - {r['event']} (Beklenti: {r['forecast']})"
                     )
 
-# ------------------------ TAB 3: CANLI MARKET ANALİZİ ------------------------ #
+# ------------------------ TAB 3: CANLI MARKET ANALİZİ (BINANCE / OKX) ------------------------ #
 with tab_live:
-    st.markdown("### 📊 Canlı Market Analizi (OHLC + İndikatörler)")
+    st.markdown("### 📊 Canlı Market Analizi (Binance / OKX OHLC + İndikatörler)")
 
-    with st.expander("📥 CoinGecko OHLC + RSI / MACD / EMA / Bollinger", expanded=True):
+    with st.expander("📥 Borsa Verisi + RSI / MACD / EMA / Bollinger", expanded=True):
         c1, c2, c3 = st.columns(3)
 
-        coin_choice = c1.selectbox(
+        exchange_live = c1.selectbox(
+            "Borsa",
+            options=["Binance", "OKX"],
+            index=0
+        )
+
+        coin_choice = c2.selectbox(
             "Coin",
             options=[
                 "Bitcoin (BTC)",
@@ -1077,28 +1135,61 @@ with tab_live:
             index=0
         )
 
-        coin_id_map = {
-            "Bitcoin (BTC)": "bitcoin",
-            "Ethereum (ETH)": "ethereum",
-            "BNB": "binancecoin",
-            "Solana (SOL)": "solana",
-            "XRP": "ripple",
-            "Dogecoin (DOGE)": "dogecoin",
-        }
-        coin_id = coin_id_map[coin_choice]
-
-        days = c2.selectbox(
-            "Zaman Aralığı",
-            options=[1, 7, 30],
-            format_func=lambda x: f"{x} gün",
-            index=0
+        interval = c3.selectbox(
+            "Zaman Dilimi",
+            options=["1m", "5m", "15m", "1h", "4h", "1d"],
+            index=3
         )
 
-        vs_currency = c3.selectbox("Karşı Para Birimi", options=["usd"], index=0)
+        c4, c5 = st.columns(2)
+        limit = c4.slider(
+            "Mum Sayısı",
+            min_value=50,
+            max_value=500,
+            value=200,
+            step=50,
+            help="Ne kadar çok mum, o kadar uzun tarihsel görünüm."
+        )
 
-        if st.button("📥 Veriyi Çek ve Hesapla"):
+        binance_symbol_map = {
+            "Bitcoin (BTC)": "BTCUSDT",
+            "Ethereum (ETH)": "ETHUSDT",
+            "BNB": "BNBUSDT",
+            "Solana (SOL)": "SOLUSDT",
+            "XRP": "XRPUSDT",
+            "Dogecoin (DOGE)": "DOGEUSDT",
+        }
+
+        okx_inst_map = {
+            "Bitcoin (BTC)": "BTC-USDT",
+            "Ethereum (ETH)": "ETH-USDT",
+            "BNB": "BNB-USDT",
+            "Solana (SOL)": "SOL-USDT",
+            "XRP": "XRP-USDT",
+            "Dogecoin (DOGE)": "DOGE-USDT",
+        }
+
+        okx_bar_map = {
+            "1m": "1m",
+            "5m": "5m",
+            "15m": "15m",
+            "1h": "1H",
+            "4h": "4H",
+            "1d": "1D",
+        }
+
+        if st.button("📥 Veriyi Çek ve Hesapla", key="live_fetch"):
             with st.spinner("Veriler çekiliyor ve indikatörler hesaplanıyor..."):
-                df_ohlc = get_ohlc_data(coin_id, vs_currency, days)
+                df_ohlc = None
+
+                if exchange_live == "Binance":
+                    symbol = binance_symbol_map[coin_choice]
+                    df_ohlc = get_ohlc_binance(symbol, interval=interval, limit=limit)
+                else:
+                    inst_id = okx_inst_map[coin_choice]
+                    bar = okx_bar_map[interval]
+                    df_ohlc = get_ohlc_okx(inst_id, bar=bar, limit=limit)
+
                 if df_ohlc is None or df_ohlc.empty:
                     st.error("OHLC verisi alınamadı. Bir süre sonra tekrar deneyin.")
                 else:
@@ -1108,13 +1199,18 @@ with tab_live:
 
                     last = df_ind.iloc[-1]
                     colX, colY, colZ = st.columns(3)
-                    colX.metric("Son Kapanış", f"{last['close']:.4f} {vs_currency.upper()}")
+                    colX.metric(
+                        "Son Kapanış",
+                        f"{last['close']:.4f} USDT"
+                    )
                     if not np.isnan(last.get("ema20", np.nan)):
                         colY.metric("EMA 20", f"{last['ema20']:.4f}")
                     if not np.isnan(last.get("rsi14", np.nan)):
                         colZ.metric("RSI 14", f"{last['rsi14']:.2f}")
 
-                    st.caption("Not: Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa datası değildir.")
+                    st.caption(
+                        f"Veri kaynağı: {exchange_live} • Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa arayüzü değildir."
+                    )
 
 # ------------------------ TAB 4: AI TRADE PLANLAYICI ------------------------ #
 with tab_planner:
@@ -1191,7 +1287,6 @@ with tab_planner:
                             )
                             st.markdown(plan_text)
 
-                            # History'e otomatik kaydet
                             st.session_state.plan_history.append({
                                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                 "symbol": symbol,
@@ -1256,7 +1351,6 @@ with tab_history:
                             """,
                             unsafe_allow_html=True
                         )
-                            # Plan metni
                         st.markdown(rec["plan_text"])
                         if rec.get("notes"):
                             st.markdown("**Notlar:**")
