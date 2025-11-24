@@ -277,14 +277,22 @@ def compute_indicators(df: pd.DataFrame):
     return df
 
 def create_live_market_figure(df: pd.DataFrame):
+    # Veriyi kopyala ve son fiyatı al
+    df = df.copy().sort_values("time")
+    last = df.iloc[-1]
+    last_price = float(last["close"])
+    last_time = last["time"]
+
+    # 3 satırlı layout: Fiyat, RSI, MACD
     fig = make_subplots(
         rows=3, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.02,
-        row_heights=[0.5, 0.25, 0.25],
-        subplot_titles=("Fiyat & EMA & Bollinger", "RSI (14)", "MACD (12,26,9)")
+        vertical_spacing=0.03,
+        row_heights=[0.55, 0.22, 0.23],
+        subplot_titles=("Fiyat + EMA + Bollinger + Anlık Fiyat", "RSI (14)", "MACD (12,26,9)")
     )
 
+    # --- 1. SATIR: CANDLE + EMA + BOLLINGER + ANLIK FİYAT --- #
     fig.add_trace(
         go.Candlestick(
             x=df["time"],
@@ -292,35 +300,177 @@ def create_live_market_figure(df: pd.DataFrame):
             high=df["high"],
             low=df["low"],
             close=df["close"],
-            name="OHLC"
+            name="OHLC",
+            increasing_line_color="#00e676",   # modern yeşil
+            increasing_fillcolor="rgba(0,230,118,0.55)",
+            decreasing_line_color="#ff5252",   # modern kırmızı
+            decreasing_fillcolor="rgba(255,82,82,0.55)",
+            hoverinfo="x+open+high+low+close"
         ),
         row=1, col=1
     )
 
-    fig.add_trace(go.Scatter(x=df["time"], y=df["ema20"], mode="lines", name="EMA 20"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["time"], y=df["ema50"], mode="lines", name="EMA 50"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["time"], y=df["bb_upper"], mode="lines", name="BB Upper"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["time"], y=df["bb_mid"], mode="lines", name="BB Mid"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["time"], y=df["bb_lower"], mode="lines", name="BB Lower"), row=1, col=1)
+    # EMA’ler – daha modern ve kontrastlı renkler
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"],
+            y=df["ema20"],
+            mode="lines",
+            name="EMA 20",
+            line=dict(color="#00bcd4", width=1.6)
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"],
+            y=df["ema50"],
+            mode="lines",
+            name="EMA 50",
+            line=dict(color="#ffb300", width=1.6)
+        ),
+        row=1, col=1
+    )
 
-    fig.add_trace(go.Scatter(x=df["time"], y=df["rsi14"], mode="lines", name="RSI 14"), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dot", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dot", row=2, col=1)
+    # Bollinger bantları – hafif gri tonlar
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"],
+            y=df["bb_upper"],
+            mode="lines",
+            name="BB Upper",
+            line=dict(color="rgba(189,189,189,0.9)", width=1, dash="dot")
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"],
+            y=df["bb_mid"],
+            mode="lines",
+            name="BB Mid",
+            line=dict(color="rgba(158,158,158,0.8)", width=1)
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"],
+            y=df["bb_lower"],
+            mode="lines",
+            name="BB Lower",
+            line=dict(color="rgba(189,189,189,0.9)", width=1, dash="dot")
+        ),
+        row=1, col=1
+    )
 
-    fig.add_trace(go.Bar(x=df["time"], y=df["macd_hist"], name="MACD Hist"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df["time"], y=df["macd"], mode="lines", name="MACD"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df["time"], y=df["macd_signal"], mode="lines", name="Signal"), row=3, col=1)
+    # Anlık fiyat çizgisi (last price line)
+    fig.add_hline(
+        y=last_price,
+        line_dash="dot",
+        line_color="#ffffff",
+        line_width=1.3,
+        row=1, col=1
+    )
 
+    # Anlık fiyat noktası ve label (grafiğin içinde gösterim)
+    fig.add_trace(
+        go.Scatter(
+            x=[last_time],
+            y=[last_price],
+            mode="markers+text",
+            name="Anlık Fiyat",
+            marker=dict(
+                color="#ffffff",
+                size=9,
+                line=dict(color="#00e676", width=1.5)
+            ),
+            text=[f"{last_price:.4f}"],
+            textposition="middle right",
+            textfont=dict(color="#ffffff", size=11),
+            showlegend=False
+        ),
+        row=1, col=1
+    )
+
+    # --- 2. SATIR: RSI --- #
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"],
+            y=df["rsi14"],
+            mode="lines",
+            name="RSI 14",
+            line=dict(color="#fdd835", width=1.5)
+        ),
+        row=2, col=1
+    )
+    # RSI aşırı alım / satım çizgileri
+    fig.add_hline(y=70, line_dash="dot", line_color="#ef5350", row=2, col=1)
+    fig.add_hline(y=30, line_dash="dot", line_color="#42a5f5", row=2, col=1)
+
+    # --- 3. SATIR: MACD --- #
+    fig.add_trace(
+        go.Bar(
+            x=df["time"],
+            y=df["macd_hist"],
+            name="MACD Hist",
+            marker_color="#26c6da",
+            opacity=0.8
+        ),
+        row=3, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"],
+            y=df["macd"],
+            mode="lines",
+            name="MACD",
+            line=dict(color="#ab47bc", width=1.4)
+        ),
+        row=3, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"],
+            y=df["macd_signal"],
+            mode="lines",
+            name="Signal",
+            line=dict(color="#ff7043", width=1.3)
+        ),
+        row=3, col=1
+    )
+
+    # --- GENEL LAYOUT --- #
     fig.update_layout(
-        height=700,
+        height=720,
         xaxis_rangeslider_visible=False,
         showlegend=True,
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font={"color": "white"},
-        margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0
+        ),
+        paper_bgcolor="#05060a",
+        plot_bgcolor="#05060a",
+        font={"color": "#e6edf3"},
+        margin=dict(l=10, r=10, t=40, b=20),
     )
+
+    # Alt panellerin arka planlarını da koyu yap
+    fig.update_xaxes(
+        showgrid=False,
+        tickfont=dict(color="#9ea7b3")
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="rgba(80,80,80,0.3)",
+        tickfont=dict(color="#9ea7b3")
+    )
+
     return fig
+
 
 @st.cache_data(ttl=3600)
 def get_mock_macro_events():
@@ -1386,3 +1536,4 @@ with tab_history:
                             st.markdown(rec["notes"])
 
 st.caption("⚠️ Buradaki tüm analizler ve planlar eğitim amaçlıdır, yatırım tavsiyesi değildir.")
+
