@@ -1,3 +1,12 @@
+Aynen, tamamını tek parça hâlinde veriyorum. Bu versiyonda:
+
+* PI Network → OKX’ten düzgün çekiliyor (`PI-USDT`).
+* Canlı market grafiği: modern renkler + grafiğin içinde **anlık fiyat çizgisi ve etiketi** var.
+* Diğer tüm fonksiyonlar önceki gibi çalışıyor.
+
+`app.py` dosyanı komple bununla değiştirebilirsin:
+
+```python
 import streamlit as st
 import pandas as pd
 import requests
@@ -283,7 +292,6 @@ def create_live_market_figure(df: pd.DataFrame):
     last_price = float(last["close"])
     last_time = last["time"]
 
-    # 3 satırlı layout: Fiyat, RSI, MACD
     fig = make_subplots(
         rows=3, cols=1,
         shared_xaxes=True,
@@ -310,7 +318,7 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # EMA’ler – daha modern ve kontrastlı renkler
+    # EMA’ler
     fig.add_trace(
         go.Scatter(
             x=df["time"],
@@ -332,7 +340,7 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # Bollinger bantları – hafif gri tonlar
+    # Bollinger
     fig.add_trace(
         go.Scatter(
             x=df["time"],
@@ -364,7 +372,7 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # Anlık fiyat çizgisi (last price line)
+    # Anlık fiyat çizgisi
     fig.add_hline(
         y=last_price,
         line_dash="dot",
@@ -373,7 +381,7 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # Anlık fiyat noktası ve label (grafiğin içinde gösterim)
+    # Anlık fiyat noktası + label
     fig.add_trace(
         go.Scatter(
             x=[last_time],
@@ -404,7 +412,6 @@ def create_live_market_figure(df: pd.DataFrame):
         ),
         row=2, col=1
     )
-    # RSI aşırı alım / satım çizgileri
     fig.add_hline(y=70, line_dash="dot", line_color="#ef5350", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", line_color="#42a5f5", row=2, col=1)
 
@@ -458,7 +465,6 @@ def create_live_market_figure(df: pd.DataFrame):
         margin=dict(l=10, r=10, t=40, b=20),
     )
 
-    # Alt panellerin arka planlarını da koyu yap
     fig.update_xaxes(
         showgrid=False,
         tickfont=dict(color="#9ea7b3")
@@ -470,7 +476,6 @@ def create_live_market_figure(df: pd.DataFrame):
     )
 
     return fig
-
 
 @st.cache_data(ttl=3600)
 def get_mock_macro_events():
@@ -1175,7 +1180,6 @@ with tab_tools:
                 else:
                     st.info("⚖️ Dengeli mod için ATR tabanlı stop ve kademeli TP iyi çalışır.")
 
-                # History'e kaydet
                 if st.button("💾 Bu Hesabı History'e Kaydet"):
                     st.session_state.risk_history.append({
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1323,7 +1327,6 @@ with tab_live:
             "Shiba Inu (SHIB)": "SHIBUSDT",
             "Optimism (OP)": "OPUSDT",
             "Arbitrum (ARB)": "ARBUSDT",
-            # Pi Network (PI) Binance'te yok → bilinçli olarak eklenmedi
         }
 
         okx_inst_map = {
@@ -1340,7 +1343,7 @@ with tab_live:
             "Shiba Inu (SHIB)": "SHIB-USDT",
             "Optimism (OP)": "OP-USDT",
             "Arbitrum (ARB)": "ARB-USDT",
-            "Pi Network (PI)": "PI-USDT",   # 🔥 DÜZELTME: PI OKX MAP'E EKLENDİ
+            "Pi Network (PI)": "PI-USDT",
         }
 
         okx_bar_map = {
@@ -1536,4 +1539,4 @@ with tab_history:
                             st.markdown(rec["notes"])
 
 st.caption("⚠️ Buradaki tüm analizler ve planlar eğitim amaçlıdır, yatırım tavsiyesi değildir.")
-
+```
