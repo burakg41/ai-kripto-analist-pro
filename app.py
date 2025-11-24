@@ -328,6 +328,7 @@ def create_live_market_figure(df: pd.DataFrame):
         subplot_titles=("Fiyat + EMA + Bollinger + Anlık Fiyat", "RSI (14)", "MACD (12,26,9)")
     )
 
+    # --- 1. SATIR: CANDLE + EMA + BOLLINGER + ANLIK FİYAT --- #
     fig.add_trace(
         go.Candlestick(
             x=df["time"],
@@ -340,11 +341,11 @@ def create_live_market_figure(df: pd.DataFrame):
             increasing_fillcolor="rgba(0,230,118,0.55)",
             decreasing_line_color="#ff5252",
             decreasing_fillcolor="rgba(255,82,82,0.55)",
-            hoverinfo="x+open+high+low+close"
         ),
         row=1, col=1
     )
 
+    # EMA’ler
     fig.add_trace(
         go.Scatter(
             x=df["time"],
@@ -366,6 +367,7 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
+    # Bollinger
     fig.add_trace(
         go.Scatter(
             x=df["time"],
@@ -397,6 +399,7 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
+    # Anlık fiyat çizgisi
     fig.add_hline(
         y=last_price,
         line_dash="dot",
@@ -405,6 +408,7 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
+    # Anlık fiyat noktası + label
     fig.add_trace(
         go.Scatter(
             x=[last_time],
@@ -424,6 +428,7 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
+    # --- 2. SATIR: RSI --- #
     fig.add_trace(
         go.Scatter(
             x=df["time"],
@@ -437,6 +442,7 @@ def create_live_market_figure(df: pd.DataFrame):
     fig.add_hline(y=70, line_dash="dot", line_color="#ef5350", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", line_color="#42a5f5", row=2, col=1)
 
+    # --- 3. SATIR: MACD --- #
     fig.add_trace(
         go.Bar(
             x=df["time"],
