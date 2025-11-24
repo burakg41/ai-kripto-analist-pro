@@ -21,7 +21,6 @@ st.set_page_config(
 if "api_key" not in st.session_state:
     st.session_state.api_key = ""
 if "model_name" not in st.session_state:
-    # Burada başlangıçta pattern tutuyoruz, gerçek model adı list_models'tan gelecek
     st.session_state.model_name = "gemini"
 if "api_status" not in st.session_state:
     st.session_state.api_status = False
@@ -34,24 +33,53 @@ if "request_count" not in st.session_state:
 if "trader_mode" not in st.session_state:
     st.session_state.trader_mode = "Dengeli"
 
-MAX_REQUESTS = 50  # Bir session'da maksimum analiz isteği sayısı
+MAX_REQUESTS = 50  # Bir session'da maksimum analiz isteği
 
-# Tema / CSS
+# =============================================================================
+# 1.1. TEMA / CSS
+# =============================================================================
 st.markdown(
     """
     <style>
-        .stApp { background-color: #0e1117; }
-        .stFileUploader { border: 2px dashed #4CAF50; border-radius: 10px; padding: 20px; }
-        .event-card { background-color: #262730; border-radius: 8px; padding: 15px; margin-bottom: 10px; border-left: 4px solid #4CAF50; }
-        .impact-high { border-left-color: #ff4b4b !important; }
-        .risk-card { background-color: #161b22; padding: 15px; border-radius: 8px; border: 1px solid #30363d; text-align: center; }
+        .stApp { 
+            background-color: #05060a; 
+        }
+        .stFileUploader { 
+            border: 2px dashed #4CAF50 !important; 
+            border-radius: 10px; 
+            padding: 20px; 
+        }
+        .risk-card {
+            background: linear-gradient(135deg, #1b1f24, #0f1115);
+            padding: 18px;
+            border-radius: 12px;
+            border: 1px solid #2f363d;
+            color: #e1e4e8;
+            margin-bottom: 10px;
+        }
+        .risk-highlight {
+            background: #161b22;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid #30363d;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        .ai-card {
+            background: linear-gradient(135deg, #10141b, #07090d);
+            padding: 18px;
+            border-radius: 12px;
+            border: 1px solid #30363d;
+            color: #e6edf3;
+            margin-bottom: 10px;
+        }
     </style>
     """,
     unsafe_allow_html=True
 )
 
 # =============================================================================
-# 2. GÜVENLİK / YARDIMCI FONKSİYONLAR
+# 2. YARDIMCI FONKSİYONLAR & GÜVENLİK
 # =============================================================================
 
 def mask_error(err) -> str:
@@ -74,24 +102,17 @@ def validate_image(file) -> bool:
         return False
 
     try:
-        # Bozuk / exploit içeren dosyaları elemek için verify
         img = Image.open(file)
         img.verify()
     except Exception:
         return False
     finally:
-        # verify sonrası pointer'ı başa sar
         file.seek(0)
 
     return True
 
-@st.cache_data(ttl=900)  # 15 dakika cache
+@st.cache_data(ttl=900)
 def get_fear_and_greed_index():
-    """
-    Fear & Greed Index verisini çeker.
-    Burada alternative.me API'sini kullanıyoruz (CoinMarketCap de aynı indekse dayanıyor).
-    15 dakikada bir otomatik olarak yenilenir (ttl=900).
-    """
     try:
         response = requests.get("https://api.alternative.me/fng/", timeout=5)
         response.raise_for_status()
@@ -100,18 +121,11 @@ def get_fear_and_greed_index():
         label = data["data"][0]["value_classification"]
     except Exception:
         value, label = 50, "Neutral"
-
     fetched_at = datetime.utcnow()
     return value, label, fetched_at
 
-@st.cache_data(ttl=300)  # 5 dakikada bir tazelensin
+@st.cache_data(ttl=300)
 def get_crypto_market_overview():
-    """
-    CoinGecko 'global' endpoint üzerinden kripto piyasa özetini çeker.
-    - BTC / ETH dominansı
-    - Toplam market cap & hacim
-    - Altcoin dominansı (100 - BTC)
-    """
     url = "https://api.coingecko.com/api/v3/global"
     try:
         r = requests.get(url, timeout=10)
@@ -143,10 +157,6 @@ def get_crypto_market_overview():
 
 @st.cache_data(ttl=300)
 def get_ohlc_data(coin_id: str, vs_currency: str = "usd", days: int = 1):
-    """
-    CoinGecko OHLC endpoint'ten OHLC verisi çeker.
-    Dönüş: DataFrame [time, open, high, low, close]
-    """
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
     params = {"vs_currency": vs_currency, "days": days}
     try:
@@ -162,22 +172,12 @@ def get_ohlc_data(coin_id: str, vs_currency: str = "usd", days: int = 1):
         return None
 
 def compute_indicators(df: pd.DataFrame):
-    """
-    Basit teknik indikatörleri hesaplar:
-    - EMA 20 / EMA 50
-    - RSI 14
-    - MACD (12, 26, 9)
-    - Bollinger (20, 2)
-    """
-    df = df.copy()
-    df = df.sort_values("time")
+    df = df.copy().sort_values("time")
     close = df["close"]
 
-    # EMA'lar
     df["ema20"] = close.ewm(span=20, adjust=False).mean()
     df["ema50"] = close.ewm(span=50, adjust=False).mean()
 
-    # RSI 14
     delta = close.diff()
     gain = np.where(delta > 0, delta, 0.0)
     loss = np.where(delta < 0, -delta, 0.0)
@@ -187,7 +187,6 @@ def compute_indicators(df: pd.DataFrame):
     rsi = 100.0 - (100.0 / (1.0 + rs))
     df["rsi14"] = rsi.values
 
-    # MACD (12, 26, 9)
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     macd_line = ema12 - ema26
@@ -197,7 +196,6 @@ def compute_indicators(df: pd.DataFrame):
     df["macd_signal"] = signal
     df["macd_hist"] = hist
 
-    # Bollinger (20, 2)
     ma20 = close.rolling(window=20, min_periods=20).mean()
     std20 = close.rolling(window=20, min_periods=20).std()
     df["bb_mid"] = ma20
@@ -207,9 +205,6 @@ def compute_indicators(df: pd.DataFrame):
     return df
 
 def create_live_market_figure(df: pd.DataFrame):
-    """
-    Candlestick + EMA/Bollinger + RSI + MACD için birleşik plotly figürü.
-    """
     fig = make_subplots(
         rows=3, cols=1,
         shared_xaxes=True,
@@ -218,7 +213,6 @@ def create_live_market_figure(df: pd.DataFrame):
         subplot_titles=("Fiyat & EMA & Bollinger", "RSI (14)", "MACD (12,26,9)")
     )
 
-    # Candlestick
     fig.add_trace(
         go.Candlestick(
             x=df["time"],
@@ -231,79 +225,19 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # EMA 20 / EMA 50
-    fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["ema20"],
-            mode="lines", name="EMA 20"
-        ),
-        row=1, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["ema50"],
-            mode="lines", name="EMA 50"
-        ),
-        row=1, col=1
-    )
+    fig.add_trace(go.Scatter(x=df["time"], y=df["ema20"], mode="lines", name="EMA 20"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["time"], y=df["ema50"], mode="lines", name="EMA 50"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["time"], y=df["bb_upper"], mode="lines", name="BB Upper"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["time"], y=df["bb_mid"], mode="lines", name="BB Mid"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["time"], y=df["bb_lower"], mode="lines", name="BB Lower"), row=1, col=1)
 
-    # Bollinger
-    fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["bb_upper"],
-            mode="lines", name="BB Upper"
-        ),
-        row=1, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["bb_mid"],
-            mode="lines", name="BB Mid"
-        ),
-        row=1, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["bb_lower"],
-            mode="lines", name="BB Lower"
-        ),
-        row=1, col=1
-    )
-
-    # RSI
-    fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["rsi14"],
-            mode="lines", name="RSI 14"
-        ),
-        row=2, col=1
-    )
-    # RSI 30-70 bantları
+    fig.add_trace(go.Scatter(x=df["time"], y=df["rsi14"], mode="lines", name="RSI 14"), row=2, col=1)
     fig.add_hline(y=70, line_dash="dot", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", row=2, col=1)
 
-    # MACD ve histogram
-    fig.add_trace(
-        go.Bar(
-            x=df["time"], y=df["macd_hist"],
-            name="MACD Hist"
-        ),
-        row=3, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["macd"],
-            mode="lines", name="MACD"
-        ),
-        row=3, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["time"], y=df["macd_signal"],
-            mode="lines", name="Signal"
-        ),
-        row=3, col=1
-    )
+    fig.add_trace(go.Bar(x=df["time"], y=df["macd_hist"], name="MACD Hist"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df["time"], y=df["macd"], mode="lines", name="MACD"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df["time"], y=df["macd_signal"], mode="lines", name="Signal"), row=3, col=1)
 
     fig.update_layout(
         height=700,
@@ -314,7 +248,6 @@ def create_live_market_figure(df: pd.DataFrame):
         font={"color": "white"},
         margin=dict(l=10, r=10, t=30, b=10),
     )
-
     return fig
 
 @st.cache_data(ttl=3600)
@@ -351,7 +284,6 @@ def create_gauge_chart(value, label):
         color = "#90ee90"
     else:
         color = "#32cd32"
-
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
@@ -374,7 +306,6 @@ def create_gauge_chart(value, label):
     return fig
 
 def format_usd_compact(value):
-    """Büyük USD değerlerini (market cap vs.) kompakt formatlar."""
     if value is None:
         return "-"
     try:
@@ -382,17 +313,16 @@ def format_usd_compact(value):
     except Exception:
         return "-"
     abs_v = abs(v)
-    if abs_v >= 1_000_000_000_000:  # trilyon
+    if abs_v >= 1_000_000_000_000:
         return f"${v/1_000_000_000_000:.2f} T"
-    elif abs_v >= 1_000_000_000:     # milyar
+    elif abs_v >= 1_000_000_000:
         return f"${v/1_000_000_000:.2f} B"
-    elif abs_v >= 1_000_000:         # milyon
+    elif abs_v >= 1_000_000:
         return f"${v/1_000_000:.2f} M"
     else:
         return f"${v:,.0f}"
 
 def configure_gemini(api_key: str):
-    """Sadece configure eder, validasyon ayrı yapılıyor."""
     clean_key = api_key.strip()
     genai.configure(api_key=clean_key, transport="rest")
     return clean_key
@@ -405,13 +335,7 @@ def _supports_generate_content(m) -> bool:
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_model(api_key: str, preferred_pattern: str):
-    """
-    1) API anahtarı ile list_models() çağır.
-    2) preferred_pattern'e uyan modellere öncelik ver.
-    3) Hiçbiri olmazsa generateContent destekleyen herhangi bir modeli seç.
-    """
     clean_key = configure_gemini(api_key)
-
     try:
         all_models = list(genai.list_models())
     except Exception as e:
@@ -420,61 +344,48 @@ def get_gemini_model(api_key: str, preferred_pattern: str):
     if not all_models:
         return None, "Bu API anahtarıyla erişilebilir model bulunamadı.", None
 
-    # generateContent destekleyenleri filtrele
     generative_models = [m for m in all_models if _supports_generate_content(m)]
-
     if not generative_models:
         return None, "generateContent destekleyen model bulunamadı.", None
 
     candidates = []
-
-    # 1) preferred_pattern içerenler
     if preferred_pattern:
         for m in generative_models:
             if preferred_pattern in m.name:
                 candidates.append(m.name)
 
-    # 2) Yoksa 'gemini' + 'vision' içerenler
     if not candidates:
         for m in generative_models:
             if "gemini" in m.name and "vision" in m.name:
                 candidates.append(m.name)
 
-    # 3) Hâlâ yoksa, herhangi bir 'gemini' modeli
     if not candidates:
         for m in generative_models:
             if "gemini" in m.name:
                 candidates.append(m.name)
 
-    # 4) Son çare: tüm generateContent modelleri
     if not candidates:
         candidates = [m.name for m in generative_models]
 
     last_err = None
     tried = []
-
     for name in candidates:
         try:
             model = genai.GenerativeModel(name)
-            _ = model.generate_content("Test")  # basit test
+            _ = model.generate_content("Test")
             return model, None, name
         except Exception as e:
             tried.append(name)
             last_err = e
             continue
 
-    err_msg = (
-        f"Şu model isimleri denendi ama çalışmadı: {tried}. "
-        f"Son hata: {last_err}"
-    )
+    err_msg = f"Şu modeller denendi ama çalışmadı: {tried}. Son hata: {last_err}"
     return None, err_msg, None
 
 def build_global_market_context():
-    """F&G + CoinGecko verilerini, AI'e beslemek için text'e çevirir."""
     fg_val, fg_lbl, fg_time = get_fear_and_greed_index()
     mkt = get_crypto_market_overview()
-    lines = []
-    lines.append(f"Global Crypto Fear & Greed Index şu anda {fg_val} ({fg_lbl}).")
+    lines = [f"Global Crypto Fear & Greed Index şu anda {fg_val} ({fg_lbl})."]
     if mkt:
         if isinstance(mkt.get("btc_dom"), (int, float)):
             lines.append(f"BTC dominansı yaklaşık %{mkt['btc_dom']:.2f} seviyesinde.")
@@ -482,69 +393,48 @@ def build_global_market_context():
             lines.append(f"ETH dominansı yaklaşık %{mkt['eth_dom']:.2f} seviyesinde.")
         if isinstance(mkt.get("alt_dom"), (int, float)):
             lines.append(f"Altcoin dominansı kabaca %{mkt['alt_dom']:.2f} civarında.")
-        if isinstance(mkt.get("mcap_change_24h"), (int, float, float)):
+        if isinstance(mkt.get("mcap_change_24h"), (int, float)):
             lines.append(f"Toplam market cap'in 24 saatlik değişimi %{mkt['mcap_change_24h']:.2f} civarında.")
     return "\n".join(lines)
 
 def get_trader_mode_description(mode: str) -> str:
-    """
-    Trader moduna göre analizin odak noktası.
-    """
     if mode == "Scalper":
         return (
-            "Çok kısa vadeli (1–5–15 dakikalık) zaman dilimlerinde, "
-            "hızlı giriş-çıkış yapan bir scalper gibi düşün. "
-            "Dar stoplar, küçük ama sık alınan karlar, yüksek volatiliteye dikkat. "
-            "Likidite, spread ve ani wick hareketlerine karşı uyarılar ekle."
+            "Çok kısa vadeli (1–5–15dk) zaman dilimlerinde, hızlı giriş-çıkış yapan bir scalper gibi düşün. "
+            "Dar stoplar, küçük ama sık alınan karlar, yüksek volatiliteye dikkat. Likidite, spread ve wick riskine vurgu yap."
         )
     elif mode == "Swing":
         return (
-            "Orta vadeli (4 saatlik ve günlük) zaman dilimlerinde, "
-            "3–15 gün arası elde tutulabilen swing işlemlerine odaklan. "
-            "Ana trend yönünü, güçlü destek/direnç bölgelerini ve "
-            "risk/ödül dengesini vurgula."
+            "Orta vadeli (4H / 1D) zaman dilimlerinde, 3–15 gün arası elde tutulabilen swing işlemler. "
+            "Ana trend, güçlü destek/direnç bölgeleri ve R/R dengesini ön plana çıkar."
         )
     elif mode == "Pozisyon":
         return (
-            "Uzun vadeli (günlük/haftalık) zaman dilimlerinde, "
-            "haftalar ve aylar sürebilecek pozisyonlara odaklan. "
-            "Makro trend, döngüsel yapılar, büyük zaman dilimi destek/dirençleri "
-            "ve sermaye korunmasına ağırlık ver."
+            "Uzun vadeli (1D/1W) pozisyonlar, haftalar-aylar sürebilecek işlemler. "
+            "Makro trend, döngüsel yapılar ve sermaye korunması kritik."
         )
-    else:  # Dengeli
+    else:
         return (
-            "Kısa ve orta vadenin dengeli bir karışımıyla, "
-            "hem intraday hem de birkaç günlük işlemler için uygun "
-            "dengeli bir bakış açısı kullan."
+            "Kısa ve orta vadenin dengeli karışımı. Hem intraday hem birkaç günlük işlemlere uygun, "
+            "nötr risk yaklaşımı."
         )
 
-def analyze_chart_with_gemini(
-    model,
-    image: Image.Image,
-    extra_context: str = "",
-    trader_mode: str = "Dengeli"
-) -> str:
-    """
-    Tradingview / kripto grafiği için Türkçe teknik analiz prompt'u.
-    Güvenlik vurgusu + küresel kabul görmüş teknikler + trader modu eklendi.
-    """
+def analyze_chart_with_gemini(model, image: Image.Image, extra_context: str = "", trader_mode: str = "Dengeli") -> str:
     safety_header = """
     ÇOK ÖNEMLİ TALİMATLAR:
     - Kesin "al" veya "sat" sinyali verme.
     - Kaldıraçlı işlem açmayı doğrudan önermemelisin.
     - Cevaplarının yatırım tavsiyesi değil, eğitim amaçlı bir analiz örneği olduğunu belirt.
     """
-
     methodology_block = """
-    Analiz yaparken, küresel olarak kabul görmüş finansal ve teknik analiz prensiplerini kullan:
-    - Dow Teorisi ve trend analizi (yükselen/düşen tepeler ve dipler)
-    - Destek/direnç, arz-talep bölgeleri
-    - Momentum göstergeleri (RSI, MACD, Stokastik) mantığını kullanarak aşırı alım/aşırı satım bölgelerini yorumla
-    - Volatilite ölçümü (Bollinger Bands, ATR) kavramlarını kullanarak stop mesafesi ve hedef aralıklarını değerlendir
-    - Hacim analizi: kırılımların hacimle desteklenip desteklenmediğini yorumla
-    - Risk/Ödül (R/R) oranına dikkat et; en az 1:2 gibi bir denge hedefle
-    - Pozisyon büyüklüğü ve maksimum sermaye riski gibi risk yönetimi prensiplerine referans ver
-    - BTC dominansı, altcoin dominansı ve toplam piyasa duyarlılığını (Fear & Greed) genel bağlam olarak dikkate al
+    Analiz yaparken, küresel olarak kabul görmüş teknik analiz prensiplerini kullan:
+    - Dow Teorisi, trend yapısı (yükselen/düşen tepe-dip)
+    - Destek/direnç ve arz-talep bölgeleri
+    - Momentum (RSI, MACD, Stokastik) mantığıyla aşırı alım/satım yorumları
+    - Volatilite (Bollinger, ATR) ile stop ve hedef mesafelerini değerlendirme
+    - Hacim analizi: kırılımların hacimle desteklenip desteklenmediği
+    - Risk/Ödül oranı (R/R) – en az 1:2 hedefle
+    - Pozisyon büyüklüğü ve max sermaye riski gibi risk yönetimi prensipleri
     """
 
     mode_desc = get_trader_mode_description(trader_mode)
@@ -560,12 +450,7 @@ def analyze_chart_with_gemini(
     Bu modun anlamı:
     {mode_desc}
 
-    Analizini özellikle bu trader modunun bakış açısından yap. Örneğin,
-    scalper ise daha kısa vadeli, swing ise orta vadeli, pozisyon trader ise
-    uzun vadeli bakış açılarını ön plana çıkar.
-
-    Aşağıdaki fiyat grafiğini analiz et ve cevaplarını mümkün olduğunca
-    sayısal seviyelerle ve maddeler halinde ver.
+    Analizini özellikle bu trader modunun bakış açısından yap.
 
     Ek bağlam (kullanıcı notu + piyasa verileri):
     {extra_context}
@@ -575,34 +460,87 @@ def analyze_chart_with_gemini(
     1️⃣ Trend:
     - Genel trend yönü (Boğa / Ayı / Yatay)
     - Kısa, orta ve uzun vade için yorum
-    - Dow teorisine göre tepe/dip yapısı hakkında kısa not
+    - Dow teorisine göre tepe/dip yapısı
 
     2️⃣ Destek & Direnç:
-    - En az 3 ana destek seviyesi (sadece rakam, gerekiyorsa aralıkla)
-    - En az 3 ana direnç seviyesi
+    - En az 3 destek ve 3 direnç seviyesi (mümkünse sayısal)
     - Bu seviyelerin neden önemli olduğuna dair kısa açıklama
 
     3️⃣ Formasyonlar:
-    - Olası formasyon(lar) (ör: üçgen, omuz-baş-omuz, çift dip, takoz vs.)
-    - Formasyonun hedef fiyat bölgesi (varsa)
-    - Formasyon ne aşamada? (oluşum, kırılım, retest, başarısız vs.)
+    - Olası formasyon(lar) (üçgen, OBO, TOBO, çift dip/tepe vs.)
+    - Hedef fiyat bölgesi ve formasyon aşaması (oluşum/kırılım/retest)
 
     4️⃣ Momentum & Volatilite:
-    - RSI/MACD mantığıyla aşırı alım/aşırı satım bölgesi tahmini yap
-    - Volatilite yüksek mi, düşük mü? Stop mesafeleri buna göre nasıl ayarlanmalı?
+    - RSI/MACD mantığıyla aşırı alım/aşırı satım değerlendirmesi
+    - Volatilite durumu (yüksek/düşük) ve stop/TP mesafelerine etkisi
 
     5️⃣ İşlem Stratejisi:
-    - Olası AL stratejisi (giriş bölgesi, stop, ilk ve ikinci TP)
-    - Olası SAT / SHORT stratejisi (varsa)
-    - Risk yönetimi önerisi (max risk %, R/R oranı, pozisyon küçültme)
+    - Olası AL (long) veya SAT (short) stratejisi (giriş bölgesi, stop, TP1/TP2)
+    - Risk yönetimi (max risk %, R/R, pozisyon küçültme vb.)
 
     6️⃣ Risk Uyarıları:
-    - Grafikte dikkat çeken anormal hareketler (ani spike, likidite boşluğu vs.)
-    - Haber, makro, FED vb. dış faktörlere karşı genel uyarı
+    - Ani spike, likidite boşluğu vb. anormallikler
+    - Makro/haber/FED gibi dış etkenlere karşı genel uyarı
     """
 
     response = model.generate_content([base_prompt, image])
     return response.text if hasattr(response, "text") else str(response)
+
+def generate_ai_trade_plan(model, symbol: str, timeframe: str, balance: float,
+                           risk_amount: float, direction: str, trader_mode: str,
+                           extra_notes: str, global_ctx: str) -> str:
+    safety_header = """
+    ÇOK ÖNEMLİ:
+    - Kesin al/sat emri verme, sadece senaryo ve plan üret.
+    - Kaldıraç ve yüksek risk konusunda mutlaka uyarı yap.
+    - Bu çıktı yatırım tavsiyesi değildir, sadece eğitim amaçlı bir örnek trade planıdır.
+    """
+
+    prompt = f"""
+    {safety_header}
+
+    Aşağıdaki parametrelere göre örnek bir trade planı hazırla:
+
+    Sembol: {symbol}
+    Zaman dilimi: {timeframe}
+    Hesap büyüklüğü: {balance} USD
+    Bu trade'de riske edilen tutar: {risk_amount} USD
+    Yön tercihi: {direction} (Long, Short veya Nötr)
+    Trader modu: {trader_mode}
+
+    Kullanıcı notları:
+    {extra_notes}
+
+    Global piyasa bağlamı:
+    {global_ctx}
+
+    Lütfen şu yapıda bir plan üret:
+
+    1️⃣ Genel Bakış:
+    - Paritenin mevcut durumu (trend, volatilite, BTC ve makro bağlamla ilişki)
+
+    2️⃣ Senaryo:
+    - Long senaryosu (giriş bölgesi, stop, TP1, TP2, opsiyonel TP3)
+    - Short senaryosu (giriş bölgesi, stop, TP1, TP2, opsiyonel TP3)
+    - Eğer sadece tek yön mantıklıysa, diğer yön için "şu anda zayıf" gibi uyarı ekle.
+
+    3️⃣ R/R ve Risk Yönetimi:
+    - Örnek pozisyon büyüklüğü (adet değil, mantıksal açıklama)
+    - Tahmini R/R oranları
+    - Max riskin neden makul veya aşırı olduğuna dair yorum
+
+    4️⃣ Zamanlama:
+    - Scalper ise: daha kısa sürede gerçekleşebilecek senaryolar
+    - Swing ise: birkaç gün sürebilecek plan
+    - Pozisyon ise: haftalar sürebilecek plan
+
+    5️⃣ Dikkat Edilmesi Gerekenler:
+    - Haber akışı, volatilite patlamaları, likidite düşüklüğü
+    - Kaldıraç konusunda net uyarılar
+    """
+
+    resp = model.generate_content(prompt)
+    return resp.text if hasattr(resp, "text") else str(resp)
 
 # =============================================================================
 # 3. BASİT OTURUM AÇMA (APP_PASSWORD VARSA)
@@ -627,19 +565,17 @@ def login_ui():
                 st.error("Yanlış şifre.")
 
 require_auth = has_app_password()
-
 if require_auth and not st.session_state.authenticated:
     login_ui()
-    st.stop()  # Geri kalan kodlar çalışmasın
+    st.stop()
 
 # =============================================================================
-# 4. SIDEBAR: API VE AYARLAR + TRADER MODU
+# 4. SIDEBAR: API, MODEL VE TRADER MODU
 # =============================================================================
 
 with st.sidebar:
     st.header("🔐 API Bağlantısı")
 
-    # Cloud secrets kontrolü
     cloud_key = None
     try:
         if "GOOGLE_API_KEY" in st.secrets:
@@ -647,7 +583,6 @@ with st.sidebar:
     except Exception:
         cloud_key = None
 
-    # Model tipi seçimi (pattern olarak kullanılacak)
     st.subheader("🤖 Model Tercihi (Pattern)")
     preferred_pattern = st.selectbox(
         "Tercih edilen model tipi",
@@ -659,10 +594,9 @@ with st.sidebar:
             "chat-bison",
             "text-bison",
         ],
-        index=3  # varsayılan: "gemini"
+        index=3
     )
 
-    # API anahtarını sıfırlama (logout)
     if st.button("🔓 API Anahtarını Temizle"):
         st.session_state.api_key = ""
         st.session_state.api_status = False
@@ -670,7 +604,6 @@ with st.sidebar:
         st.session_state.last_error = None
         st.success("API anahtarı hafızadan temizlendi.")
 
-    # Cloud key varsa otomatik kullan
     if cloud_key:
         st.success("☁️ Cloud API Key kullanılıyor")
         st.session_state.api_key = cloud_key
@@ -680,30 +613,24 @@ with st.sidebar:
             st.session_state.api_key,
             st.session_state.model_name
         )
-
         if model:
             st.session_state.api_status = True
             st.session_state.last_error = None
             if resolved_name and resolved_name != st.session_state.model_name:
-                st.info(
-                    f"Pattern: `{st.session_state.model_name}` → "
-                    f"Gerçek model: **{resolved_name}**"
-                )
+                st.info(f"Pattern: `{st.session_state.model_name}` → Gerçek model: **{resolved_name}**")
             st.session_state.model_name = resolved_name
         else:
             st.session_state.api_status = False
             st.session_state.last_error = err
             safe_err = mask_error(err)
             st.error(f"❌ Bağlantı hatası: {safe_err}")
-
     else:
         user_key_input = st.text_input(
             "Google Gemini API Key",
             value=st.session_state.api_key,
             type="password",
-            help="API anahtarını Google AI Studio veya MakerSuite'ten alabilirsin."
+            help="API anahtarını Google AI Studio / MakerSuite'ten alabilirsin."
         )
-
         st.session_state.model_name = preferred_pattern
 
         if st.button("Bağlan ve Test Et"):
@@ -718,10 +645,7 @@ with st.sidebar:
                         st.session_state.api_status = True
                         st.session_state.last_error = None
                         if resolved_name and resolved_name != st.session_state.model_name:
-                            st.info(
-                                f"Pattern: `{st.session_state.model_name}` → "
-                                f"Gerçek model: **{resolved_name}**"
-                            )
+                            st.info(f"Pattern: `{st.session_state.model_name}` → Gerçek model: **{resolved_name}**")
                         st.session_state.model_name = resolved_name
                         st.success(f"✅ Bağlantı başarılı! Aktif model: {resolved_name}")
                     else:
@@ -732,7 +656,6 @@ with st.sidebar:
             else:
                 st.warning("Lütfen API anahtarını giriniz.")
 
-    # Durum bilgisi
     if st.session_state.api_status:
         st.caption(f"🔌 API durumu: **Bağlı** | Model: `{st.session_state.model_name}`")
     else:
@@ -753,24 +676,24 @@ with st.sidebar:
     st.caption(get_trader_mode_description(selected_mode))
 
 # =============================================================================
-# 5. ANA BÖLÜM - TEKNİK ANALİZ
+# 5. ANA BÖLÜM – GRAFİK ANALİZİ
 # =============================================================================
 
-st.title("📈 AI Teknik Analiz Merkezi")
+st.title("📈 AI Kripto Teknik Analiz Merkezi")
 
 col_left, col_right = st.columns([2, 1])
 
 with col_left:
     st.markdown("### 📤 Grafik Yükle")
     uploaded_files = st.file_uploader(
-        "TradingView veya borsa grafiği ekran görüntüsü (Max 15 görsel)",
+        "TradingView / borsa grafiği ekran görüntüsü (Max 15 görsel)",
         type=["png", "jpg", "jpeg"],
         accept_multiple_files=True
     )
 
     extra_notes = st.text_area(
         "İsteğe bağlı not / ek bilgi",
-        help="Örn: 'BTCUSDT 4H grafik, son dump sonrası durum' gibi kısa notlar ekleyebilirsin."
+        help="Örn: 'BTCUSDT 4H, son düşüş sonrası durum' gibi."
     )
 
 with col_right:
@@ -778,9 +701,9 @@ with col_right:
     st.markdown(
         """
         - Birden fazla grafiği aynı anda yükleyebilirsin.
-        - Her grafik için ayrı ayrı teknik analiz üretir.
-        - Analizler **öğretici ve temkinli** olacak şekilde tasarlanmıştır.
-        - Çıkan sonuçlar yatırım tavsiyesi değildir, sadece eğitim amaçlıdır.
+        - Her grafik için ayrı teknik analiz üretir.
+        - Analizler **öğretici ve temkinli** tasarlandı.
+        - Çıkan sonuçlar yatırım tavsiyesi değildir.
         """
     )
 
@@ -789,14 +712,9 @@ if uploaded_files:
         st.error("⚠️ Maksimum 15 dosya yükleyebilirsiniz.")
     else:
         start_analysis = st.button("🔍 Analizi Başlat", type="primary")
-
         if start_analysis:
-            # Basit rate limiting
             if st.session_state.request_count + len(uploaded_files) > MAX_REQUESTS:
-                st.error(
-                    "⚠️ Maksimum istek limitine ulaştınız. "
-                    "Yeni analiz için sayfayı yenileyerek yeni oturum başlatın."
-                )
+                st.error("⚠️ Maksimum istek limitine ulaştınız. Sayfayı yenileyip yeni oturum başlatın.")
             else:
                 if not st.session_state.api_status:
                     st.error("⚠️ Önce sol menüden API bağlantısını yapmalısınız.")
@@ -811,18 +729,15 @@ if uploaded_files:
                     else:
                         if resolved_name and resolved_name != st.session_state.model_name:
                             st.session_state.model_name = resolved_name
-                            st.info(f"Analiz modeli otomatik olarak **{resolved_name}** olarak güncellendi.")
+                            st.info(f"Analiz modeli **{resolved_name}** olarak güncellendi.")
 
                         st.session_state.request_count += len(uploaded_files)
-
-                        # Piyasa bağlamını sadece bir kez üret
                         global_ctx = build_global_market_context()
                         combined_extra = (extra_notes or "") + "\n\n" + global_ctx
                         trader_mode = st.session_state.get("trader_mode", "Dengeli")
 
                         st.markdown("---")
-                        st.subheader("🧠 Yapay Zeka Analizleri")
-
+                        st.subheader("🧠 Yapay Zeka Grafik Analizleri")
                         progress_bar = st.progress(0)
                         total = len(uploaded_files)
 
@@ -841,11 +756,7 @@ if uploaded_files:
 
                             col_img, col_txt = st.columns([1, 2])
                             with col_img:
-                                st.image(
-                                    image,
-                                    caption=f"{uploaded_file.name}",
-                                    use_container_width=True
-                                )
+                                st.image(image, caption=f"{uploaded_file.name}", use_container_width=True)
 
                             with col_txt:
                                 with st.spinner("Grafik analiz ediliyor..."):
@@ -858,7 +769,7 @@ if uploaded_files:
                                         )
                                         st.markdown(text)
                                     except Exception as e:
-                                        st.error(f"Analiz sırasında hata oluştu: {e}")
+                                        st.error(f"Analiz sırasında hata: {e}")
 
                             st.markdown("---")
 
@@ -871,145 +782,149 @@ if uploaded_files:
 st.markdown("<br>", unsafe_allow_html=True)
 st.subheader("🛠️ Yardımcı Araçlar")
 
-# ------------------------ RİSK HESAPLAYICI ------------------------ #
-with st.expander("🧮 Risk Hesaplayıcı", expanded=False):
+# ------------------------ AKILLI RİSK & LİKİDASYON HESAPLAYICI ------------------------ #
+with st.expander("🧮 Akıllı Risk, Marjin & Likidasyon Hesaplayıcı", expanded=False):
+
+    trader_mode = st.session_state.trader_mode
+
+    mode_recommendations = {
+        "Scalper": "Önerilen risk: **%0.2 – %0.5** • Çok dar stop • 1–5dk volatilitesine dikkat • Spread ve wick’e karşı tetikte ol.",
+        "Swing": "Önerilen risk: **%0.5 – %1.5** • Daha geniş stop • 2–3 TP’li yapı mantıklı.",
+        "Pozisyon": "Önerilen risk: **%0.25 – %0.75** • Günlük/haftalık trend kritik • Makro risklere dikkat.",
+        "Dengeli": "Önerilen risk: **%0.5 – %1.0** • R/R en az 1:2 hedeflenmeli."
+    }
+
     st.markdown(
-        "Bu araç, **entry–stop mesafesi** ve seçtiğin risk tutarına göre "
-        "girmen gereken **adet** (coin/kontrat) ve **gereken marjini** hesaplar. "
-        "Kaldıraç alanını 1x bırakırsan spot gibi davranır."
+        f"""
+        <div class="risk-card">
+            <b>🎯 Seçilen Trader Modu:</b> {trader_mode}<br>
+            <div class="risk-highlight">{mode_recommendations[trader_mode]}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
-    mode = st.radio(
-        "Hesaplama modu",
-        ["Yüzdeye göre", "Sabit tutar"],
-        horizontal=True,
-    )
+    st.markdown("### ⚙️ Hesaplama Parametreleri")
 
-    c1, c2, c3 = st.columns(3)
+    col1, col2, col3 = st.columns(3)
 
-    # Kasa ve risk girişi
-    balance = c1.number_input(
-        "Toplam Kasa ($)",
-        min_value=0.0,
-        value=1000.0,
-        help="Borsadaki toplam bakiyeni tahmini olarak yaz."
-    )
+    balance = col1.number_input("💰 Toplam Kasa ($)", min_value=0.0, value=1000.0)
 
-    if mode == "Yüzdeye göre":
-        risk_pct_input = c1.number_input(
-            "Trade Başına Risk (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=1.0,
-            help="Genelde %0.5–%2 arası önerilir."
-        )
-        risk_amount = balance * (risk_pct_input / 100.0) if balance > 0 else 0.0
-        risk_pct_calc = risk_pct_input
+    calc_type = col1.radio("Risk Türü", ["Yüzde", "Sabit Tutar"])
+    if calc_type == "Yüzde":
+        risk_pct = col1.number_input("Risk (%)", min_value=0.0, max_value=100.0, value=1.0)
+        risk_amount = balance * (risk_pct / 100) if balance > 0 else 0.0
     else:
-        risk_amount = c1.number_input(
-            "Risk Tutarı ($)",
-            min_value=0.0,
-            value=10.0,
-            help="Bu pozisyonda maksimum kaybetmeyi göze aldığın tutar."
-        )
-        risk_pct_calc = (risk_amount / balance * 100.0) if balance > 0 else 0.0
+        risk_amount = col1.number_input("Risk ($)", min_value=0.0, value=10.0)
+        risk_pct = (risk_amount / balance * 100) if balance > 0 else 0.0
 
-    # Fiyatlar ve kaldıraç
-    leverage = c2.number_input(
-        "Kaldıraç (x)",
-        min_value=1.0,
-        value=1.0,
-        step=1.0,
-        help="Spot için 1x, futures için borsadaki kaldıraç oranını gir."
-    )
-    entry = c2.number_input(
-        "Giriş Fiyatı",
-        min_value=0.0,
-        value=0.0
-    )
-    stop = c2.number_input(
-        "Stop Fiyatı",
-        min_value=0.0,
-        value=0.0,
-        help="Zarar durdur fiyatı (long için entry’nin altında, short için üstünde olmalı)."
+    leverage = col2.number_input("🔗 Kaldıraç (x)", min_value=1.0, value=1.0, step=1.0)
+    entry = col2.number_input("Giriş Fiyatı", min_value=0.0)
+    stop = col2.number_input("Stop Fiyatı", min_value=0.0)
+
+    exchange = col3.selectbox(
+        "🏦 Borsa / Ürün",
+        options=[
+            "Binance Futures (USDT-M)",
+            "Bybit USDT Perp",
+            "OKX Futures",
+            "Bitget Futures",
+            "Spot / Diğer"
+        ],
+        index=0
     )
 
-    # TP'ler
-    tp1 = c3.number_input(
-        "TP1 (opsiyonel)",
+    direction = col3.radio("Pozisyon Yönü", ["Long", "Short"], horizontal=True)
+
+    # Varsayılan maintenance margin oranları (kabaca, sadece tahmini)
+    default_mmr_map = {
+        "Binance Futures (USDT-M)": 0.004,
+        "Bybit USDT Perp": 0.004,
+        "OKX Futures": 0.004,
+        "Bitget Futures": 0.004,
+        "Spot / Diğer": 0.0
+    }
+    default_mmr = default_mmr_map.get(exchange, 0.004)
+
+    mmr = st.slider(
+        "Maintenance Margin Oranı (tahmini)",
         min_value=0.0,
-        value=0.0
+        max_value=0.05,
+        value=float(default_mmr),
+        step=0.001,
+        help="Borsaya göre değişir. Bu değer yaklaşık bir tasfiye fiyatı hesaplamak içindir, %100 doğru olmayabilir."
     )
-    tp2 = c3.number_input(
-        "TP2 (opsiyonel)",
-        min_value=0.0,
-        value=0.0
-    )
-    tp3 = c3.number_input(
-        "TP3 (opsiyonel)",
-        min_value=0.0,
-        value=0.0
-    )
+
+    tp1 = col3.number_input("🎯 TP1", min_value=0.0)
+    tp2 = col3.number_input("TP2", min_value=0.0)
+    tp3 = col3.number_input("TP3", min_value=0.0)
 
     st.markdown("---")
 
     if entry > 0 and stop > 0 and risk_amount > 0:
         price_risk = abs(entry - stop)
-
         if price_risk == 0:
-            st.warning("Giriş ve stop fiyatı aynı olamaz.")
+            st.error("Giriş ve stop aynı olamaz!")
         else:
-            # Girilecek adet (coin/kontrat)
             qty = risk_amount / price_risk
-
-            # Pozisyonun toplam değeri (notional)
-            notional_value = qty * entry
-
-            # Gerekli marjin (futures için) – spotta kaldıraç 1x ise notional = marjin
-            margin_required = notional_value / leverage if leverage > 0 else notional_value
-
-            # Güvenlik metrikleri
-            margin_ratio = (margin_required / balance * 100.0) if balance > 0 else 0.0
+            notional = qty * entry
+            margin = notional / leverage if leverage > 0 else notional
+            margin_pct = (margin / balance * 100) if balance > 0 else 0.0
 
             colA, colB, colC = st.columns(3)
-            colA.metric("Girilecek Adet", f"{qty:.4f}")
-            colB.metric("Pozisyon Değeri (Notional)", f"${notional_value:,.2f}")
-            colC.metric("Gerekli Marjin", f"${margin_required:,.2f}")
+            colA.metric("📦 Girilecek Adet", f"{qty:.4f}")
+            colB.metric("💼 Pozisyon Değeri", f"${notional:,.2f}")
+            colC.metric("🔒 Gerekli Marjin", f"${margin:,.2f}")
 
-            colD, colE = st.columns(2)
-            colD.metric(
-                "Gerçek Risk Tutarı",
-                f"${risk_amount:,.2f}",
-                help="Stop’a geldiğinde kasandan eksilecek yaklaşık tutar."
-            )
-            colE.metric(
-                "Kasa İçindeki Risk %",
-                f"{risk_pct_calc:.2f}%",
-                help="Bu trade’in kasanın ne kadarını riske attığını gösterir."
+            st.markdown(
+                f"""
+                <div class="risk-highlight">
+                    Kasaya oranla marjin: <b>%{margin_pct:.2f}</b><br>
+                    Gerçek risk: <b>${risk_amount:.2f}</b> ({risk_pct:.2f}%)
+                </div>
+                """,
+                unsafe_allow_html=True
             )
 
-            if margin_ratio > 0:
-                st.info(
-                    f"Bu pozisyon için marjin, kasanın yaklaşık **%{margin_ratio:.2f}** kadarını kilitler "
-                    f"({leverage:.0f}x kaldıraçla)."
-                )
+            # Tasfiye fiyatı (yaklaşık) – sadece futures ürünlerde
+            if exchange != "Spot / Diğer" and qty > 0 and leverage > 0:
+                notional = entry * qty
+                margin = notional / leverage
+                maint_margin = notional * mmr
+                loss_to_liq = margin - maint_margin
+                if loss_to_liq > 0:
+                    price_move = loss_to_liq / qty
+                    if direction == "Long":
+                        liq_price = entry - price_move
+                    else:
+                        liq_price = entry + price_move
 
-            if margin_required > balance and balance > 0:
-                st.error(
-                    "Bu pozisyon için gereken marjin, mevcut bakiyenden yüksek görünüyor. "
-                    "Kaldıracı artırmayı veya riske ettiğin tutarı düşürmeyi düşün."
-                )
+                    if liq_price > 0:
+                        st.markdown(
+                            f"""
+                            <div class="risk-highlight">
+                                Tahmini tasfiye fiyatı ({direction}): 
+                                <b>{liq_price:.6f}</b><br>
+                                <small>Not: Bu yaklaşık bir hesaplamadır, borsanın gerçek likidasyon fiyatıyla birebir uyuşmayabilir.</small>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                else:
+                    st.info("Bakiyeye göre tasfiye fiyatı hesaplanamadı (maintenance margin > marjin).")
 
-            # TP'ler için R:R hesaplama fonksiyonu
+            elif exchange == "Spot / Diğer":
+                st.info("Spot işlemlerde tasfiye fiyatı yoktur; sadece stop-loss ile risk yönetimi yapılır.")
+
+            # TP ve R/R analizi
+            st.markdown("### 📊 R:R ve TP Analizi")
             def compute_rr(tp_price: float):
                 if tp_price <= 0 or tp_price == entry:
                     return None
-                reward_per_unit = abs(tp_price - entry)
-                rr = reward_per_unit / price_risk
-                potential_profit = reward_per_unit * qty
-                return rr, potential_profit
-
-            st.markdown("#### 🎯 TP Bazlı R/R Analizi")
+                reward = abs(tp_price - entry)
+                rr = reward / price_risk
+                profit = reward * qty
+                return rr, profit
 
             any_tp = False
             for label, tp_val in [("TP1", tp1), ("TP2", tp2), ("TP3", tp3)]:
@@ -1017,18 +932,23 @@ with st.expander("🧮 Risk Hesaplayıcı", expanded=False):
                 if res is None:
                     continue
                 any_tp = True
-                rr, profit_val = res
-                st.write(
-                    f"**{label} = {tp_val}** → "
-                    f"Tahmini Kâr: **${profit_val:,.2f}** | "
-                    f"R/R Oranı: **{rr:.2f}**"
-                )
+                rr, profit = res
+                st.success(f"**{label} = {tp_val}** → Tahmini Kâr: **${profit:.2f}** | R:R = **{rr:.2f}**")
 
             if not any_tp:
-                st.caption("TP fiyatı girdiğinde burada R/R oranlarını görebilirsin.")
+                st.caption("TP fiyatları girdiğinde burada R:R oranlarını görebilirsin.")
 
+            st.markdown("### ⚠️ Mod Bazlı Öneriler")
+            if trader_mode == "Scalper":
+                st.warning("⚡ Scalper modunda geniş stop ve yüksek kaldıraç çok risklidir. Spread ve wick’lere dikkat et.")
+            elif trader_mode == "Swing":
+                st.info("📈 Swing işlemlerinde 4H/1D trendi, EMA50/200 birlikteliği ve R/R ≥ 2 çok önemli.")
+            elif trader_mode == "Pozisyon":
+                st.warning("📉 Pozisyon işlemlerinde BTC dominansı, makro veri ve uzun vadeli trend kritik öneme sahiptir.")
+            else:
+                st.info("⚖️ Dengeli mod için ATR tabanlı stop ve kademeli TP iyi çalışır.")
     else:
-        st.info("Hesaplama için **kasa, risk, giriş ve stop** değerlerini doldurman gerekiyor.")
+        st.info("Hesaplama için kasa, risk, giriş ve stop değerlerini doldurun.")
 
 # ------------------------ PİYASA PANELİ ------------------------ #
 with st.expander("🌍 Piyasa Paneli", expanded=False):
@@ -1036,12 +956,9 @@ with st.expander("🌍 Piyasa Paneli", expanded=False):
 
     with cm1:
         st.markdown("##### Crypto Fear & Greed Index")
-
-        # Manuel yenileme butonu (cache temizleyip yeniden çekiyoruz)
         if st.button("🔄 F&G Verisini Yenile"):
             get_fear_and_greed_index.clear()
             st.rerun()
-
         val, lbl, fetched_at = get_fear_and_greed_index()
         st.plotly_chart(create_gauge_chart(val, lbl), use_container_width=True)
         st.caption(
@@ -1051,11 +968,10 @@ with st.expander("🌍 Piyasa Paneli", expanded=False):
 
     with cm2:
         tab1, tab2 = st.tabs(["Kripto Piyasa Özeti", "Makro Gündem"])
-
         with tab1:
             mkt = get_crypto_market_overview()
             if not mkt:
-                st.warning("Piyasa verileri şu anda çekilemedi. Birkaç dakika sonra tekrar deneyin.")
+                st.warning("Piyasa verileri şu anda çekilemedi. Sonra tekrar deneyin.")
             else:
                 cA, cB, cC = st.columns(3)
                 if isinstance(mkt.get("btc_dom"), (int, float)):
@@ -1076,7 +992,7 @@ with st.expander("🌍 Piyasa Paneli", expanded=False):
                 cD, cE, cF = st.columns(3)
                 cD.metric("Toplam Market Cap", format_usd_compact(mkt.get("total_mcap")))
                 cE.metric("24h Hacim", format_usd_compact(mkt.get("total_volume")))
-                if isinstance(mkt.get("mcap_change_24h"), (int, float, float)):
+                if isinstance(mkt.get("mcap_change_24h"), (int, float)):
                     cF.metric("Market Cap 24h %", f"{mkt['mcap_change_24h']:.2f}%")
                 else:
                     cF.metric("Market Cap 24h %", "-")
@@ -1085,15 +1001,13 @@ with st.expander("🌍 Piyasa Paneli", expanded=False):
                     "Veri kaynağı: CoinGecko Global API  \n"
                     f"Güncelleme zamanı (UTC): {mkt['fetched_at'].strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-
         with tab2:
             df = get_mock_macro_events()
             st.markdown("#### Yaklaşan Makro Veriler (Örnek)")
             for _, r in df.iterrows():
                 st.warning(
                     f"**{r['date'].strftime('%d %b %Y')} {r['time']}** - "
-                    f"{r['currency']} - {r['event']} "
-                    f"(Beklenti: {r['forecast']})"
+                    f"{r['currency']} - {r['event']} (Beklenti: {r['forecast']})"
                 )
 
 # ------------------------ CANLI MARKET ANALİZİ ------------------------ #
@@ -1130,15 +1044,10 @@ with st.expander("📥 CoinGecko OHLC + RSI / MACD / EMA / Bollinger", expanded=
         "Zaman Aralığı",
         options=[1, 7, 30],
         format_func=lambda x: f"{x} gün",
-        index=0,
-        help="CoinGecko OHLC endpoint'i sınırlı zaman aralıklarını destekler."
-    )
-
-    vs_currency = c3.selectbox(
-        "Karşı Para Birimi",
-        options=["usd"],
         index=0
     )
+
+    vs_currency = c3.selectbox("Karşı Para Birimi", options=["usd"], index=0)
 
     if st.button("📥 Veriyi Çek ve Hesapla"):
         with st.spinner("Veriler çekiliyor ve indikatörler hesaplanıyor..."):
@@ -1158,8 +1067,82 @@ with st.expander("📥 CoinGecko OHLC + RSI / MACD / EMA / Bollinger", expanded=
                 if not np.isnan(last.get("rsi14", np.nan)):
                     colZ.metric("RSI 14", f"{last['rsi14']:.2f}")
 
-                st.caption(
-                    "Not: Bu bölümdeki hesaplamalar yalnızca eğitim amaçlıdır; gerçek zamanlı borsa datası değildir."
-                )
+                st.caption("Not: Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa datası değildir.")
 
-st.caption("⚠️ Buradaki tüm analizler eğitim amaçlıdır, yatırım tavsiyesi değildir.")
+# ------------------------ AI TRADE PLANLAYICI ------------------------ #
+st.markdown("<br>", unsafe_allow_html=True)
+st.subheader("🤖 AI Trade Planlayıcı")
+
+with st.expander("🧠 Otomatik Trade Planı Oluştur (AI Destekli)", expanded=False):
+    st.markdown(
+        """
+        <div class="ai-card">
+        Bu bölüm, seçtiğin parametrelere göre **örnek bir trade planı** oluşturur.  
+        <br>Trade'leri birebir kopyalamak yerine, **eğitim ve fikir amaçlı** kullanman önerilir.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    c1, c2, c3 = st.columns(3)
+    symbol = c1.text_input("Sembol", value="BTCUSDT")
+    timeframe = c1.selectbox("Zaman Dilimi", ["1m", "5m", "15m", "1H", "4H", "1D"], index=4)
+
+    plan_direction = c2.radio("Yön Tercihi", ["Long", "Short", "Her İkisi"], index=2)
+
+    plan_balance = c2.number_input("Hesap Büyüklüğü (USD)", min_value=0.0, value=1000.0)
+    plan_risk_pct = c2.number_input("Bu trade'de risk (%)", min_value=0.0, max_value=100.0, value=1.0)
+
+    plan_mode = c3.selectbox(
+        "Planlama Modu (Trader Tarzı)",
+        ["Aynı (Sidebar'daki)", "Scalper", "Swing", "Pozisyon", "Dengeli"],
+        index=0
+    )
+
+    extra_plan_notes = st.text_area(
+        "Ek Notlar (opsiyonel)",
+        help="Örn: 'Yalnızca trend yönünde işlemler', 'FED açıklaması sonrası' vb."
+    )
+
+    if st.button("📋 Trade Planı Oluştur"):
+        if not st.session_state.api_status:
+            st.error("Önce sol menüden API bağlantısını yapmalısın (Gemini API key).")
+        else:
+            model, err, resolved_name = get_gemini_model(
+                st.session_state.api_key,
+                st.session_state.model_name
+            )
+            if not model:
+                safe_err = mask_error(err)
+                st.error(f"Model oluşturulamadı: {safe_err}")
+            else:
+                if resolved_name and resolved_name != st.session_state.model_name:
+                    st.session_state.model_name = resolved_name
+                    st.info(f"Planlama modeli **{resolved_name}** olarak güncellendi.")
+
+                risk_amount = plan_balance * (plan_risk_pct / 100.0) if plan_balance > 0 else 0.0
+                if plan_mode == "Aynı (Sidebar'daki)":
+                    effective_mode = st.session_state.trader_mode
+                else:
+                    effective_mode = plan_mode
+
+                global_ctx = build_global_market_context()
+
+                with st.spinner("AI trade planı hazırlanıyor..."):
+                    try:
+                        plan_text = generate_ai_trade_plan(
+                            model=model,
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            balance=plan_balance,
+                            risk_amount=risk_amount,
+                            direction=plan_direction,
+                            trader_mode=effective_mode,
+                            extra_notes=extra_plan_notes,
+                            global_ctx=global_ctx
+                        )
+                        st.markdown(plan_text)
+                    except Exception as e:
+                        st.error(f"Plan oluşturulurken hata oluştu: {e}")
+
+st.caption("⚠️ Buradaki tüm analizler ve planlar eğitim amaçlıdır, yatırım tavsiyesi değildir.")
