@@ -1,12 +1,3 @@
-Aynen, tamamını tek parça hâlinde veriyorum. Bu versiyonda:
-
-* PI Network → OKX’ten düzgün çekiliyor (`PI-USDT`).
-* Canlı market grafiği: modern renkler + grafiğin içinde **anlık fiyat çizgisi ve etiketi** var.
-* Diğer tüm fonksiyonlar önceki gibi çalışıyor.
-
-`app.py` dosyanı komple bununla değiştirebilirsin:
-
-```python
 import streamlit as st
 import pandas as pd
 import requests
@@ -1539,4 +1530,3 @@ with tab_history:
                             st.markdown(rec["notes"])
 
 st.caption("⚠️ Buradaki tüm analizler ve planlar eğitim amaçlıdır, yatırım tavsiyesi değildir.")
-```
