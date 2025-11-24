@@ -2,9 +2,11 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import google.generativeai as genai
 from PIL import Image
 from datetime import datetime, timedelta
+import numpy as np
 
 # =============================================================================
 # 1. GENEL AYARLAR
@@ -29,6 +31,8 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 if "request_count" not in st.session_state:
     st.session_state.request_count = 0
+if "trader_mode" not in st.session_state:
+    st.session_state.trader_mode = "Dengeli"
 
 MAX_REQUESTS = 50  # Bir session'da maksimum analiz isteği sayısı
 
@@ -136,6 +140,182 @@ def get_crypto_market_overview():
         }
     except Exception:
         return None
+
+@st.cache_data(ttl=300)
+def get_ohlc_data(coin_id: str, vs_currency: str = "usd", days: int = 1):
+    """
+    CoinGecko OHLC endpoint'ten OHLC verisi çeker.
+    Dönüş: DataFrame [time, open, high, low, close]
+    """
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
+    params = {"vs_currency": vs_currency, "days": days}
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        raw = r.json()
+        if not raw:
+            return None
+        df = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close"])
+        df["time"] = pd.to_datetime(df["time"], unit="ms")
+        return df
+    except Exception:
+        return None
+
+def compute_indicators(df: pd.DataFrame):
+    """
+    Basit teknik indikatörleri hesaplar:
+    - EMA 20 / EMA 50
+    - RSI 14
+    - MACD (12, 26, 9)
+    - Bollinger (20, 2)
+    """
+    df = df.copy()
+    df = df.sort_values("time")
+    close = df["close"]
+
+    # EMA'lar
+    df["ema20"] = close.ewm(span=20, adjust=False).mean()
+    df["ema50"] = close.ewm(span=50, adjust=False).mean()
+
+    # RSI 14
+    delta = close.diff()
+    gain = np.where(delta > 0, delta, 0.0)
+    loss = np.where(delta < 0, -delta, 0.0)
+    roll_up = pd.Series(gain).rolling(window=14, min_periods=14).mean()
+    roll_down = pd.Series(loss).rolling(window=14, min_periods=14).mean()
+    rs = roll_up / (roll_down + 1e-9)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    df["rsi14"] = rsi.values
+
+    # MACD (12, 26, 9)
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal = macd_line.ewm(span=9, adjust=False).mean()
+    hist = macd_line - signal
+    df["macd"] = macd_line
+    df["macd_signal"] = signal
+    df["macd_hist"] = hist
+
+    # Bollinger (20, 2)
+    ma20 = close.rolling(window=20, min_periods=20).mean()
+    std20 = close.rolling(window=20, min_periods=20).std()
+    df["bb_mid"] = ma20
+    df["bb_upper"] = ma20 + 2 * std20
+    df["bb_lower"] = ma20 - 2 * std20
+
+    return df
+
+def create_live_market_figure(df: pd.DataFrame):
+    """
+    Candlestick + EMA/Bollinger + RSI + MACD için birleşik plotly figürü.
+    """
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.02,
+        row_heights=[0.5, 0.25, 0.25],
+        subplot_titles=("Fiyat & EMA & Bollinger", "RSI (14)", "MACD (12,26,9)")
+    )
+
+    # Candlestick
+    fig.add_trace(
+        go.Candlestick(
+            x=df["time"],
+            open=df["open"],
+            high=df["high"],
+            low=df["low"],
+            close=df["close"],
+            name="OHLC"
+        ),
+        row=1, col=1
+    )
+
+    # EMA 20 / EMA 50
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"], y=df["ema20"],
+            mode="lines", name="EMA 20"
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"], y=df["ema50"],
+            mode="lines", name="EMA 50"
+        ),
+        row=1, col=1
+    )
+
+    # Bollinger
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"], y=df["bb_upper"],
+            mode="lines", name="BB Upper"
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"], y=df["bb_mid"],
+            mode="lines", name="BB Mid"
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"], y=df["bb_lower"],
+            mode="lines", name="BB Lower"
+        ),
+        row=1, col=1
+    )
+
+    # RSI
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"], y=df["rsi14"],
+            mode="lines", name="RSI 14"
+        ),
+        row=2, col=1
+    )
+    # RSI 30-70 bantları
+    fig.add_hline(y=70, line_dash="dot", row=2, col=1)
+    fig.add_hline(y=30, line_dash="dot", row=2, col=1)
+
+    # MACD ve histogram
+    fig.add_trace(
+        go.Bar(
+            x=df["time"], y=df["macd_hist"],
+            name="MACD Hist"
+        ),
+        row=3, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"], y=df["macd"],
+            mode="lines", name="MACD"
+        ),
+        row=3, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["time"], y=df["macd_signal"],
+            mode="lines", name="Signal"
+        ),
+        row=3, col=1
+    )
+
+    fig.update_layout(
+        height=700,
+        xaxis_rangeslider_visible=False,
+        showlegend=True,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"color": "white"},
+        margin=dict(l=10, r=10, t=30, b=10),
+    )
+
+    return fig
 
 @st.cache_data(ttl=3600)
 def get_mock_macro_events():
@@ -306,10 +486,47 @@ def build_global_market_context():
             lines.append(f"Toplam market cap'in 24 saatlik değişimi %{mkt['mcap_change_24h']:.2f} civarında.")
     return "\n".join(lines)
 
-def analyze_chart_with_gemini(model, image: Image.Image, extra_context: str = "") -> str:
+def get_trader_mode_description(mode: str) -> str:
+    """
+    Trader moduna göre analizin odak noktası.
+    """
+    if mode == "Scalper":
+        return (
+            "Çok kısa vadeli (1–5–15 dakikalık) zaman dilimlerinde, "
+            "hızlı giriş-çıkış yapan bir scalper gibi düşün. "
+            "Dar stoplar, küçük ama sık alınan karlar, yüksek volatiliteye dikkat. "
+            "Likidite, spread ve ani wick hareketlerine karşı uyarılar ekle."
+        )
+    elif mode == "Swing":
+        return (
+            "Orta vadeli (4 saatlik ve günlük) zaman dilimlerinde, "
+            "3–15 gün arası elde tutulabilen swing işlemlerine odaklan. "
+            "Ana trend yönünü, güçlü destek/direnç bölgelerini ve "
+            "risk/ödül dengesini vurgula."
+        )
+    elif mode == "Pozisyon":
+        return (
+            "Uzun vadeli (günlük/haftalık) zaman dilimlerinde, "
+            "haftalar ve aylar sürebilecek pozisyonlara odaklan. "
+            "Makro trend, döngüsel yapılar, büyük zaman dilimi destek/dirençleri "
+            "ve sermaye korunmasına ağırlık ver."
+        )
+    else:  # Dengeli
+        return (
+            "Kısa ve orta vadenin dengeli bir karışımıyla, "
+            "hem intraday hem de birkaç günlük işlemler için uygun "
+            "dengeli bir bakış açısı kullan."
+        )
+
+def analyze_chart_with_gemini(
+    model,
+    image: Image.Image,
+    extra_context: str = "",
+    trader_mode: str = "Dengeli"
+) -> str:
     """
     Tradingview / kripto grafiği için Türkçe teknik analiz prompt'u.
-    Güvenlik vurgusu + küresel kabul görmüş teknikler eklendi.
+    Güvenlik vurgusu + küresel kabul görmüş teknikler + trader modu eklendi.
     """
     safety_header = """
     ÇOK ÖNEMLİ TALİMATLAR:
@@ -330,12 +547,22 @@ def analyze_chart_with_gemini(model, image: Image.Image, extra_context: str = ""
     - BTC dominansı, altcoin dominansı ve toplam piyasa duyarlılığını (Fear & Greed) genel bağlam olarak dikkate al
     """
 
+    mode_desc = get_trader_mode_description(trader_mode)
+
     base_prompt = f"""
     {safety_header}
 
     Sen deneyimli bir Türk teknik analist ve kripto trader'sın.
 
     {methodology_block}
+
+    Trader modu: {trader_mode}
+    Bu modun anlamı:
+    {mode_desc}
+
+    Analizini özellikle bu trader modunun bakış açısından yap. Örneğin,
+    scalper ise daha kısa vadeli, swing ise orta vadeli, pozisyon trader ise
+    uzun vadeli bakış açılarını ön plana çıkar.
 
     Aşağıdaki fiyat grafiğini analiz et ve cevaplarını mümkün olduğunca
     sayısal seviyelerle ve maddeler halinde ver.
@@ -406,7 +633,7 @@ if require_auth and not st.session_state.authenticated:
     st.stop()  # Geri kalan kodlar çalışmasın
 
 # =============================================================================
-# 4. SIDEBAR: API VE AYARLAR
+# 4. SIDEBAR: API VE AYARLAR + TRADER MODU
 # =============================================================================
 
 with st.sidebar:
@@ -513,6 +740,18 @@ with st.sidebar:
         if st.session_state.last_error:
             st.caption(f"Son hata: `{mask_error(st.session_state.last_error)}`")
 
+    st.markdown("---")
+    st.subheader("🎯 Trader Modu")
+    mode_options = ["Dengeli", "Scalper", "Swing", "Pozisyon"]
+    current_index = mode_options.index(st.session_state.trader_mode) if st.session_state.trader_mode in mode_options else 0
+    selected_mode = st.radio(
+        "Stilini seç",
+        options=mode_options,
+        index=current_index
+    )
+    st.session_state.trader_mode = selected_mode
+    st.caption(get_trader_mode_description(selected_mode))
+
 # =============================================================================
 # 5. ANA BÖLÜM - TEKNİK ANALİZ
 # =============================================================================
@@ -579,6 +818,7 @@ if uploaded_files:
                         # Piyasa bağlamını sadece bir kez üret
                         global_ctx = build_global_market_context()
                         combined_extra = (extra_notes or "") + "\n\n" + global_ctx
+                        trader_mode = st.session_state.get("trader_mode", "Dengeli")
 
                         st.markdown("---")
                         st.subheader("🧠 Yapay Zeka Analizleri")
@@ -613,7 +853,8 @@ if uploaded_files:
                                         text = analyze_chart_with_gemini(
                                             model=model,
                                             image=image,
-                                            extra_context=combined_extra
+                                            extra_context=combined_extra,
+                                            trader_mode=trader_mode
                                         )
                                         st.markdown(text)
                                     except Exception as e:
@@ -632,18 +873,54 @@ st.subheader("🛠️ Yardımcı Araçlar")
 
 # ------------------------ RİSK HESAPLAYICI ------------------------ #
 with st.expander("🧮 Risk Hesaplayıcı", expanded=False):
+    st.markdown(
+        "Bu araç, **entry–stop mesafesi** ve seçtiğin risk tutarına göre "
+        "girmen gereken **adet** (coin/kontrat) ve **gereken marjini** hesaplar. "
+        "Kaldıraç alanını 1x bırakırsan spot gibi davranır."
+    )
+
+    mode = st.radio(
+        "Hesaplama modu",
+        ["Yüzdeye göre", "Sabit tutar"],
+        horizontal=True,
+    )
+
     c1, c2, c3 = st.columns(3)
 
+    # Kasa ve risk girişi
     balance = c1.number_input(
-        "Kasa ($)",
+        "Toplam Kasa ($)",
         min_value=0.0,
-        value=1000.0
+        value=1000.0,
+        help="Borsadaki toplam bakiyeni tahmini olarak yaz."
     )
-    risk_pct = c1.number_input(
-        "Risk (%)",
-        min_value=0.0,
-        max_value=100.0,
-        value=1.0
+
+    if mode == "Yüzdeye göre":
+        risk_pct_input = c1.number_input(
+            "Trade Başına Risk (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=1.0,
+            help="Genelde %0.5–%2 arası önerilir."
+        )
+        risk_amount = balance * (risk_pct_input / 100.0) if balance > 0 else 0.0
+        risk_pct_calc = risk_pct_input
+    else:
+        risk_amount = c1.number_input(
+            "Risk Tutarı ($)",
+            min_value=0.0,
+            value=10.0,
+            help="Bu pozisyonda maksimum kaybetmeyi göze aldığın tutar."
+        )
+        risk_pct_calc = (risk_amount / balance * 100.0) if balance > 0 else 0.0
+
+    # Fiyatlar ve kaldıraç
+    leverage = c2.number_input(
+        "Kaldıraç (x)",
+        min_value=1.0,
+        value=1.0,
+        step=1.0,
+        help="Spot için 1x, futures için borsadaki kaldıraç oranını gir."
     )
     entry = c2.number_input(
         "Giriş Fiyatı",
@@ -653,35 +930,105 @@ with st.expander("🧮 Risk Hesaplayıcı", expanded=False):
     stop = c2.number_input(
         "Stop Fiyatı",
         min_value=0.0,
+        value=0.0,
+        help="Zarar durdur fiyatı (long için entry’nin altında, short için üstünde olmalı)."
+    )
+
+    # TP'ler
+    tp1 = c3.number_input(
+        "TP1 (opsiyonel)",
+        min_value=0.0,
         value=0.0
     )
-    tp = c3.number_input(
-        "Hedef Fiyat (TP)",
+    tp2 = c3.number_input(
+        "TP2 (opsiyonel)",
+        min_value=0.0,
+        value=0.0
+    )
+    tp3 = c3.number_input(
+        "TP3 (opsiyonel)",
         min_value=0.0,
         value=0.0
     )
 
-    if entry > 0 and stop > 0 and balance > 0 and risk_pct > 0:
-        risk_val = balance * (risk_pct / 100)
+    st.markdown("---")
+
+    if entry > 0 and stop > 0 and risk_amount > 0:
         price_risk = abs(entry - stop)
 
-        if price_risk > 0:
-            size = risk_val / price_risk
-            st.info(
-                f"Girilecek Adet: **{size:.4f}** | "
-                f"Risk Tutarı: **${risk_val:.2f}**"
+        if price_risk == 0:
+            st.warning("Giriş ve stop fiyatı aynı olamaz.")
+        else:
+            # Girilecek adet (coin/kontrat)
+            qty = risk_amount / price_risk
+
+            # Pozisyonun toplam değeri (notional)
+            notional_value = qty * entry
+
+            # Gerekli marjin (futures için) – spotta kaldıraç 1x ise notional = marjin
+            margin_required = notional_value / leverage if leverage > 0 else notional_value
+
+            # Güvenlik metrikleri
+            margin_ratio = (margin_required / balance * 100.0) if balance > 0 else 0.0
+
+            colA, colB, colC = st.columns(3)
+            colA.metric("Girilecek Adet", f"{qty:.4f}")
+            colB.metric("Pozisyon Değeri (Notional)", f"${notional_value:,.2f}")
+            colC.metric("Gerekli Marjin", f"${margin_required:,.2f}")
+
+            colD, colE = st.columns(2)
+            colD.metric(
+                "Gerçek Risk Tutarı",
+                f"${risk_amount:,.2f}",
+                help="Stop’a geldiğinde kasandan eksilecek yaklaşık tutar."
+            )
+            colE.metric(
+                "Kasa İçindeki Risk %",
+                f"{risk_pct_calc:.2f}%",
+                help="Bu trade’in kasanın ne kadarını riske attığını gösterir."
             )
 
-            if tp > 0 and tp != entry:
-                potential_profit_per_unit = abs(tp - entry)
-                potential_profit = potential_profit_per_unit * size
-                rr_ratio = potential_profit_per_unit / price_risk
-                st.success(
-                    f"📊 Tahmini Kâr: **${potential_profit:.2f}** | "
-                    f"R/R Oranı: **{rr_ratio:.2f}**"
+            if margin_ratio > 0:
+                st.info(
+                    f"Bu pozisyon için marjin, kasanın yaklaşık **%{margin_ratio:.2f}** kadarını kilitler "
+                    f"({leverage:.0f}x kaldıraçla)."
                 )
-        else:
-            st.warning("Giriş ve stop fiyatı aynı olamaz.")
+
+            if margin_required > balance and balance > 0:
+                st.error(
+                    "Bu pozisyon için gereken marjin, mevcut bakiyenden yüksek görünüyor. "
+                    "Kaldıracı artırmayı veya riske ettiğin tutarı düşürmeyi düşün."
+                )
+
+            # TP'ler için R:R hesaplama fonksiyonu
+            def compute_rr(tp_price: float):
+                if tp_price <= 0 or tp_price == entry:
+                    return None
+                reward_per_unit = abs(tp_price - entry)
+                rr = reward_per_unit / price_risk
+                potential_profit = reward_per_unit * qty
+                return rr, potential_profit
+
+            st.markdown("#### 🎯 TP Bazlı R/R Analizi")
+
+            any_tp = False
+            for label, tp_val in [("TP1", tp1), ("TP2", tp2), ("TP3", tp3)]:
+                res = compute_rr(tp_val)
+                if res is None:
+                    continue
+                any_tp = True
+                rr, profit_val = res
+                st.write(
+                    f"**{label} = {tp_val}** → "
+                    f"Tahmini Kâr: **${profit_val:,.2f}** | "
+                    f"R/R Oranı: **{rr:.2f}**"
+                )
+
+            if not any_tp:
+                st.caption("TP fiyatı girdiğinde burada R/R oranlarını görebilirsin.")
+
+    else:
+        st.info("Hesaplama için **kasa, risk, giriş ve stop** değerlerini doldurman gerekiyor.")
 
 # ------------------------ PİYASA PANELİ ------------------------ #
 with st.expander("🌍 Piyasa Paneli", expanded=False):
@@ -747,6 +1094,72 @@ with st.expander("🌍 Piyasa Paneli", expanded=False):
                     f"**{r['date'].strftime('%d %b %Y')} {r['time']}** - "
                     f"{r['currency']} - {r['event']} "
                     f"(Beklenti: {r['forecast']})"
+                )
+
+# ------------------------ CANLI MARKET ANALİZİ ------------------------ #
+st.markdown("<br>", unsafe_allow_html=True)
+st.subheader("📊 Canlı Market Analizi (OHLC + İndikatörler)")
+
+with st.expander("📥 CoinGecko OHLC + RSI / MACD / EMA / Bollinger", expanded=False):
+    c1, c2, c3 = st.columns(3)
+
+    coin_choice = c1.selectbox(
+        "Coin",
+        options=[
+            "Bitcoin (BTC)",
+            "Ethereum (ETH)",
+            "BNB",
+            "Solana (SOL)",
+            "XRP",
+            "Dogecoin (DOGE)",
+        ],
+        index=0
+    )
+
+    coin_id_map = {
+        "Bitcoin (BTC)": "bitcoin",
+        "Ethereum (ETH)": "ethereum",
+        "BNB": "binancecoin",
+        "Solana (SOL)": "solana",
+        "XRP": "ripple",
+        "Dogecoin (DOGE)": "dogecoin",
+    }
+    coin_id = coin_id_map[coin_choice]
+
+    days = c2.selectbox(
+        "Zaman Aralığı",
+        options=[1, 7, 30],
+        format_func=lambda x: f"{x} gün",
+        index=0,
+        help="CoinGecko OHLC endpoint'i sınırlı zaman aralıklarını destekler."
+    )
+
+    vs_currency = c3.selectbox(
+        "Karşı Para Birimi",
+        options=["usd"],
+        index=0
+    )
+
+    if st.button("📥 Veriyi Çek ve Hesapla"):
+        with st.spinner("Veriler çekiliyor ve indikatörler hesaplanıyor..."):
+            df_ohlc = get_ohlc_data(coin_id, vs_currency, days)
+            if df_ohlc is None or df_ohlc.empty:
+                st.error("OHLC verisi alınamadı. Bir süre sonra tekrar deneyin.")
+            else:
+                df_ind = compute_indicators(df_ohlc)
+                fig = create_live_market_figure(df_ind)
+                st.plotly_chart(fig, use_container_width=True)
+
+                last = df_ind.iloc[-1]
+                colX, colY, colZ = st.columns(3)
+                colX.metric("Son Kapanış", f"{last['close']:.4f} {vs_currency.upper()}")
+                if not np.isnan(last.get("ema20", np.nan)):
+                    colY.metric("EMA 20", f"{last['ema20']:.4f}")
+                if not np.isnan(last.get("rsi14", np.nan)):
+                    colZ.metric("RSI 14", f"{last['rsi14']:.2f}")
+
+                st.caption(
+                    "Not: Bu bölümdeki hesaplamalar yalnızca eğitim amaçlıdır; gerçek zamanlı borsa datası değildir."
                 )
 
 st.caption("⚠️ Buradaki tüm analizler eğitim amaçlıdır, yatırım tavsiyesi değildir.")
