@@ -173,13 +173,14 @@ def get_crypto_market_overview():
         return None
 
 # -------------------------------------------------------------------------
-# BINANCE & OKX OHLC VERİ ÇEKME (CANLI)
+# BINANCE & OKX & FALLBACK COINGECKO OHLC VERİ ÇEKME (CANLI)
 # -------------------------------------------------------------------------
+
 @st.cache_data(ttl=60)
 def get_ohlc_binance(symbol: str, interval: str = "1h", limit: int = 200):
     """
     Binance spot/futures sembolü için OHLC verisi çeker.
-    Örn: symbol='BTCUSDT', interval='1h', limit=200
+    Hata durumunda (df=None, error_message) döndürür.
     """
     url = "https://api.binance.com/api/v3/klines"
     params = {
@@ -192,7 +193,7 @@ def get_ohlc_binance(symbol: str, interval: str = "1h", limit: int = 200):
         r.raise_for_status()
         raw = r.json()
         if not raw:
-            return None
+            return None, "Binance API boş veri döndürdü."
         data = []
         for k in raw:
             data.append({
@@ -203,22 +204,21 @@ def get_ohlc_binance(symbol: str, interval: str = "1h", limit: int = 200):
                 "close": float(k[4]),
                 "volume": float(k[5]),
             })
-        df = pd.DataFrame(data)
-        df = df.sort_values("time")
-        return df
-    except Exception:
-        return None
+        df = pd.DataFrame(data).sort_values("time")
+        return df, None
+    except Exception as e:
+        return None, f"Binance hatası: {e}"
 
 @st.cache_data(ttl=60)
 def get_ohlc_okx(inst_id: str, bar: str = "1H", limit: int = 200):
     """
     OKX sembolü için OHLC verisi çeker.
-    Örn: inst_id='BTC-USDT', bar='1H', limit=200
+    Hata durumunda (df=None, error_message) döndürür.
     """
     url = "https://www.okx.com/api/v5/market/candles"
     params = {
         "instId": inst_id,
-        "bar": bar,       # '1m','5m','15m','1H','4H','1D' vb.
+        "bar": bar,
         "limit": limit
     }
     try:
@@ -226,7 +226,7 @@ def get_ohlc_okx(inst_id: str, bar: str = "1H", limit: int = 200):
         r.raise_for_status()
         raw = r.json().get("data", [])
         if not raw:
-            return None
+            return None, "OKX API boş veri döndürdü."
         data = []
         for k in raw:
             data.append({
@@ -237,11 +237,49 @@ def get_ohlc_okx(inst_id: str, bar: str = "1H", limit: int = 200):
                 "close": float(k[4]),
                 "volume": float(k[5]),
             })
-        df = pd.DataFrame(data)
-        df = df.sort_values("time")
-        return df
-    except Exception:
-        return None
+        df = pd.DataFrame(data).sort_values("time")
+        return df, None
+    except Exception as e:
+        return None, f"OKX hatası: {e}"
+
+@st.cache_data(ttl=60)
+def get_ohlc_coingecko(coin_id: str, interval_hint: str = "1h", limit: int = 200):
+    """
+    CoinGecko OHLC fallback.
+    /coins/{id}/ohlc?vs_currency=usd&days=N
+    """
+    if interval_hint in ["1m", "5m", "15m"]:
+        days = 1
+    elif interval_hint in ["1h", "4h"]:
+        days = 7
+    else:  # "1d" vb.
+        days = 30
+
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
+    params = {"vs_currency": "usd", "days": days}
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        raw = r.json()
+        if not raw:
+            return None, "CoinGecko OHLC boş veri döndürdü."
+        data = []
+        for k in raw:
+            # [timestamp, open, high, low, close]
+            data.append({
+                "time": pd.to_datetime(k[0], unit="ms"),
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": 0.0,
+            })
+        df = pd.DataFrame(data).sort_values("time")
+        if len(df) > limit:
+            df = df.iloc[-limit:]
+        return df, None
+    except Exception as e:
+        return None, f"CoinGecko OHLC hatası: {e}"
 
 def compute_indicators(df: pd.DataFrame):
     df = df.copy().sort_values("time")
@@ -277,7 +315,6 @@ def compute_indicators(df: pd.DataFrame):
     return df
 
 def create_live_market_figure(df: pd.DataFrame):
-    # Veriyi kopyala ve son fiyatı al
     df = df.copy().sort_values("time")
     last = df.iloc[-1]
     last_price = float(last["close"])
@@ -291,7 +328,6 @@ def create_live_market_figure(df: pd.DataFrame):
         subplot_titles=("Fiyat + EMA + Bollinger + Anlık Fiyat", "RSI (14)", "MACD (12,26,9)")
     )
 
-    # --- 1. SATIR: CANDLE + EMA + BOLLINGER + ANLIK FİYAT --- #
     fig.add_trace(
         go.Candlestick(
             x=df["time"],
@@ -300,16 +336,15 @@ def create_live_market_figure(df: pd.DataFrame):
             low=df["low"],
             close=df["close"],
             name="OHLC",
-            increasing_line_color="#00e676",   # modern yeşil
+            increasing_line_color="#00e676",
             increasing_fillcolor="rgba(0,230,118,0.55)",
-            decreasing_line_color="#ff5252",   # modern kırmızı
+            decreasing_line_color="#ff5252",
             decreasing_fillcolor="rgba(255,82,82,0.55)",
             hoverinfo="x+open+high+low+close"
         ),
         row=1, col=1
     )
 
-    # EMA’ler
     fig.add_trace(
         go.Scatter(
             x=df["time"],
@@ -331,7 +366,6 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # Bollinger
     fig.add_trace(
         go.Scatter(
             x=df["time"],
@@ -363,7 +397,6 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # Anlık fiyat çizgisi
     fig.add_hline(
         y=last_price,
         line_dash="dot",
@@ -372,7 +405,6 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # Anlık fiyat noktası + label
     fig.add_trace(
         go.Scatter(
             x=[last_time],
@@ -392,7 +424,6 @@ def create_live_market_figure(df: pd.DataFrame):
         row=1, col=1
     )
 
-    # --- 2. SATIR: RSI --- #
     fig.add_trace(
         go.Scatter(
             x=df["time"],
@@ -406,7 +437,6 @@ def create_live_market_figure(df: pd.DataFrame):
     fig.add_hline(y=70, line_dash="dot", line_color="#ef5350", row=2, col=1)
     fig.add_hline(y=30, line_dash="dot", line_color="#42a5f5", row=2, col=1)
 
-    # --- 3. SATIR: MACD --- #
     fig.add_trace(
         go.Bar(
             x=df["time"],
@@ -438,7 +468,6 @@ def create_live_market_figure(df: pd.DataFrame):
         row=3, col=1
     )
 
-    # --- GENEL LAYOUT --- #
     fig.update_layout(
         height=720,
         xaxis_rangeslider_visible=False,
@@ -1012,10 +1041,10 @@ with tab_tools:
         trader_mode = st.session_state.trader_mode
 
         mode_recommendations = {
-            "Scalper": "Önerilen risk: **%0.2 – %0.5** • Çok dar stop • 1–5dk volatilitesine dikkat • Spread ve wick’e karşı tetikte ol.",
-            "Swing": "Önerilen risk: **%0.5 – %1.5** • Daha geniş stop • 2–3 TP’li yapı mantıklı.",
-            "Pozisyon": "Önerilen risk: **%0.25 – %0.75** • Günlük/haftalık trend kritik • Makro risklere dikkat.",
-            "Dengeli": "Önerilen risk: **%0.5 – %1.0** • R/R en az 1:2 hedeflenmeli."
+            "Scalper": "Önerilen risk: %0.2 – %0.5 • Çok dar stop • 1–5dk volatilitesine dikkat • Spread ve wick’e karşı tetikte ol.",
+            "Swing": "Önerilen risk: %0.5 – %1.5 • Daha geniş stop • 2–3 TP’li yapı mantıklı.",
+            "Pozisyon": "Önerilen risk: %0.25 – %0.75 • Günlük/haftalık trend kritik • Makro risklere dikkat.",
+            "Dengeli": "Önerilen risk: %0.5 – %1.0 • R/R en az 1:2 hedeflenmeli."
         }
 
         st.markdown(
@@ -1163,13 +1192,13 @@ with tab_tools:
 
                 st.markdown("#### ⚠️ Mod Bazlı Öneriler")
                 if trader_mode == "Scalper":
-                    st.warning("⚡ Scalper modunda geniş stop ve yüksek kaldıraç çok risklidir. Spread ve wick’lere dikkat et.")
+                    st.warning("Scalper modunda geniş stop ve yüksek kaldıraç çok risklidir. Spread ve wick’lere dikkat et.")
                 elif trader_mode == "Swing":
-                    st.info("📈 Swing işlemlerinde 4H/1D trendi, EMA50/200 birlikteliği ve R/R ≥ 2 çok önemli.")
+                    st.info("Swing işlemlerinde 4H/1D trendi, EMA50/200 birlikteliği ve R/R ≥ 2 çok önemli.")
                 elif trader_mode == "Pozisyon":
-                    st.warning("📉 Pozisyon işlemlerinde BTC dominansı, makro veri ve uzun vadeli trend kritik öneme sahiptir.")
+                    st.warning("Pozisyon işlemlerinde BTC dominansı, makro veri ve uzun vadeli trend kritik öneme sahiptir.")
                 else:
-                    st.info("⚖️ Dengeli mod için ATR tabanlı stop ve kademeli TP iyi çalışır.")
+                    st.info("Dengeli mod için ATR tabanlı stop ve kademeli TP iyi çalışır.")
 
                 if st.button("💾 Bu Hesabı History'e Kaydet"):
                     st.session_state.risk_history.append({
@@ -1206,7 +1235,7 @@ with tab_tools:
             val, lbl, fetched_at = get_fear_and_greed_index()
             st.plotly_chart(create_gauge_chart(val, lbl), use_container_width=True)
             st.caption(
-                f"Index: **{val}** ({lbl})  \n"
+                f"Index: {val} ({lbl})  \n"
                 f"Güncelleme zamanı (UTC): {fetched_at.strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
@@ -1250,11 +1279,11 @@ with tab_tools:
                 st.markdown("#### Yaklaşan Makro Veriler (Örnek)")
                 for _, r in df.iterrows():
                     st.warning(
-                        f"**{r['date'].strftime('%d %b %Y')} {r['time']}** - "
+                        f"{r['date'].strftime('%d %b %Y')} {r['time']} - "
                         f"{r['currency']} - {r['event']} (Beklenti: {r['forecast']})"
                     )
 
-# ------------------------ TAB 3: CANLI MARKET ANALİZİ (BINANCE / OKX) ------------------------ #
+# ------------------------ TAB 3: CANLI MARKET ANALİZİ (BINANCE / OKX + FALLBACK) ------------------------ #
 with tab_live:
     st.markdown("### 📊 Canlı Market Analizi (Binance / OKX OHLC + İndikatörler)")
 
@@ -1337,6 +1366,23 @@ with tab_live:
             "Pi Network (PI)": "PI-USDT",
         }
 
+        coingecko_id_map = {
+            "Bitcoin (BTC)": "bitcoin",
+            "Ethereum (ETH)": "ethereum",
+            "BNB": "binancecoin",
+            "Solana (SOL)": "solana",
+            "XRP": "ripple",
+            "Dogecoin (DOGE)": "dogecoin",
+            "Cardano (ADA)": "cardano",
+            "Toncoin (TON)": "toncoin",
+            "Chainlink (LINK)": "chainlink",
+            "Pepe (PEPE)": "pepe",
+            "Shiba Inu (SHIB)": "shiba-inu",
+            "Optimism (OP)": "optimism",
+            "Arbitrum (ARB)": "arbitrum",
+            "Pi Network (PI)": "pi-network",
+        }
+
         okx_bar_map = {
             "1m": "1m",
             "5m": "5m",
@@ -1349,25 +1395,35 @@ with tab_live:
         if st.button("📥 Veriyi Çek ve Hesapla", key="live_fetch"):
             with st.spinner("Veriler çekiliyor ve indikatörler hesaplanıyor..."):
                 df_ohlc = None
+                primary_error = None
+                fallback_error = None
 
                 if exchange_live == "Binance":
                     if coin_choice not in binance_symbol_map:
-                        st.error("Bu coin için Binance OHLC verisi desteklenmiyor (örn. Pi Network).")
-                        df_ohlc = None
+                        primary_error = "Bu coin için Binance OHLC verisi desteklenmiyor (örneğin Pi Network)."
                     else:
                         symbol = binance_symbol_map[coin_choice]
-                        df_ohlc = get_ohlc_binance(symbol, interval=interval, limit=limit)
-                else:  # OKX
+                        df_ohlc, primary_error = get_ohlc_binance(symbol, interval=interval, limit=limit)
+                else:
                     if coin_choice not in okx_inst_map:
-                        st.error("Bu coin için OKX OHLC verisi desteklenmiyor.")
-                        df_ohlc = None
+                        primary_error = "Bu coin için OKX OHLC verisi desteklenmiyor."
                     else:
                         inst_id = okx_inst_map[coin_choice]
                         bar = okx_bar_map[interval]
-                        df_ohlc = get_ohlc_okx(inst_id, bar=bar, limit=limit)
+                        df_ohlc, primary_error = get_ohlc_okx(inst_id, bar=bar, limit=limit)
+
+                if df_ohlc is None:
+                    coin_id = coingecko_id_map.get(coin_choice)
+                    if coin_id:
+                        df_ohlc, fallback_error = get_ohlc_coingecko(coin_id, interval_hint=interval, limit=limit)
 
                 if df_ohlc is None or df_ohlc.empty:
-                    st.error("OHLC verisi alınamadı. Bir süre sonra tekrar deneyin.")
+                    msg = "OHLC verisi alınamadı."
+                    if primary_error:
+                        msg += f" Ana kaynak hata: {primary_error}"
+                    if fallback_error:
+                        msg += f" Fallback (CoinGecko) hata: {fallback_error}"
+                    st.error(msg)
                 else:
                     df_ind = compute_indicators(df_ohlc)
                     fig = create_live_market_figure(df_ind)
@@ -1381,8 +1437,10 @@ with tab_live:
                     if not np.isnan(last.get("rsi14", np.nan)):
                         colZ.metric("RSI 14", f"{last['rsi14']:.2f}")
 
+                    if primary_error:
+                        st.info("Ana borsa kaynağı başarısız oldu, CoinGecko OHLC fallback kullanıldı.")
                     st.caption(
-                        f"Veri kaynağı: {exchange_live} • Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa arayüzü değildir."
+                        f"Veri kaynağı: {exchange_live} veya fallback CoinGecko • Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa arayüzü değildir."
                     )
 
 # ------------------------ TAB 4: AI TRADE PLANLAYICI ------------------------ #
@@ -1392,7 +1450,7 @@ with tab_planner:
     st.markdown(
         """
         <div class="ai-card">
-        Bu bölüm, seçtiğin parametrelere göre <b>örnek bir trade planı</b> oluşturur.  
+        Bu bölüm, seçtiğin parametrelere göre örnek bir trade planı oluşturur.  
         Planlar, eğitim ve strateji geliştirme amaçlıdır; yatırım tavsiyesi değildir.
         </div>
         """,
@@ -1435,7 +1493,7 @@ with tab_planner:
                 else:
                     if resolved_name and resolved_name != st.session_state.model_name:
                         st.session_state.model_name = resolved_name
-                        st.info(f"Planlama modeli **{resolved_name}** olarak güncellendi.")
+                        st.info(f"Planlama modeli {resolved_name} olarak güncellendi.")
 
                     risk_amount = plan_balance * (plan_risk_pct / 100.0) if plan_balance > 0 else 0.0
                     if plan_mode == "Aynı (Sidebar'daki)":
