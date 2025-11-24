@@ -1149,7 +1149,7 @@ with tab_live:
             index=3
         )
 
-        c4, c5 = st.columns(2)
+        c4, _ = st.columns(2)
         limit = c4.slider(
             "Mum Sayısı",
             min_value=50,
@@ -1173,7 +1173,7 @@ with tab_live:
             "Shiba Inu (SHIB)": "SHIBUSDT",
             "Optimism (OP)": "OPUSDT",
             "Arbitrum (ARB)": "ARBUSDT",
-            # "Pi Network (PI)" bilinçli olarak eklenmedi → API'de genelde yok / IOU
+            # Pi Network (PI) Binance'te yok → bilinçli olarak eklenmedi
         }
 
         okx_inst_map = {
@@ -1190,7 +1190,7 @@ with tab_live:
             "Shiba Inu (SHIB)": "SHIB-USDT",
             "Optimism (OP)": "OP-USDT",
             "Arbitrum (ARB)": "ARB-USDT",
-            # "Pi Network (PI)" yok
+            "Pi Network (PI)": "PI-USDT",   # 🔥 DÜZELTME: PI OKX MAP'E EKLENDİ
         }
 
         okx_bar_map = {
@@ -1213,9 +1213,9 @@ with tab_live:
                     else:
                         symbol = binance_symbol_map[coin_choice]
                         df_ohlc = get_ohlc_binance(symbol, interval=interval, limit=limit)
-                else:
+                else:  # OKX
                     if coin_choice not in okx_inst_map:
-                        st.error("Bu coin için OKX OHLC verisi desteklenmiyor (örn. Pi Network).")
+                        st.error("Bu coin için OKX OHLC verisi desteklenmiyor.")
                         df_ohlc = None
                     else:
                         inst_id = okx_inst_map[coin_choice]
@@ -1231,10 +1231,7 @@ with tab_live:
 
                     last = df_ind.iloc[-1]
                     colX, colY, colZ = st.columns(3)
-                    colX.metric(
-                        "Son Kapanış",
-                        f"{last['close']:.4f} USDT"
-                    )
+                    colX.metric("Son Kapanış", f"{last['close']:.4f} USDT")
                     if not np.isnan(last.get("ema20", np.nan)):
                         colY.metric("EMA 20", f"{last['ema20']:.4f}")
                     if not np.isnan(last.get("rsi14", np.nan)):
