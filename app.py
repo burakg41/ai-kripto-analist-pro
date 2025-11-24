@@ -32,6 +32,10 @@ if "request_count" not in st.session_state:
     st.session_state.request_count = 0
 if "trader_mode" not in st.session_state:
     st.session_state.trader_mode = "Dengeli"
+if "risk_history" not in st.session_state:
+    st.session_state.risk_history = []
+if "plan_history" not in st.session_state:
+    st.session_state.plan_history = []
 
 MAX_REQUESTS = 50  # Bir session'da maksimum analiz isteği
 
@@ -43,35 +47,48 @@ st.markdown(
     <style>
         .stApp { 
             background-color: #05060a; 
+            color: #e6edf3;
+            font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        .block-container {
+            padding-top: 1.5rem;
+            padding-bottom: 2rem;
+            max-width: 1300px;
         }
         .stFileUploader { 
             border: 2px dashed #4CAF50 !important; 
             border-radius: 10px; 
             padding: 20px; 
         }
-        .risk-card {
-            background: linear-gradient(135deg, #1b1f24, #0f1115);
+        .risk-card, .section-card, .ai-card {
+            background: radial-gradient(circle at top left, #161b22 0, #05060a 60%);
             padding: 18px;
-            border-radius: 12px;
-            border: 1px solid #2f363d;
-            color: #e1e4e8;
-            margin-bottom: 10px;
+            border-radius: 14px;
+            border: 1px solid rgba(99,110,123,0.6);
+            color: #e6edf3;
+            margin-bottom: 12px;
+            box-shadow: 0 12px 35px rgba(0,0,0,0.55);
         }
         .risk-highlight {
-            background: #161b22;
+            background: rgba(22,27,34,0.9);
             padding: 12px;
             border-radius: 10px;
             border: 1px solid #30363d;
             font-size: 14px;
-            margin-top: 5px;
+            margin-top: 8px;
         }
-        .ai-card {
-            background: linear-gradient(135deg, #10141b, #07090d);
-            padding: 18px;
-            border-radius: 12px;
+        .small-muted {
+            font-size: 12px;
+            color: #8b949e;
+        }
+        .history-badge {
+            background: #161b22;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 11px;
             border: 1px solid #30363d;
-            color: #e6edf3;
-            margin-bottom: 10px;
+            display: inline-block;
+            margin-right: 6px;
         }
     </style>
     """,
@@ -130,7 +147,7 @@ def get_crypto_market_overview():
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
-        data = r.json().get("data", {})
+        data = r.json().get("data", {}) or {}
 
         mcap_perc = data.get("market_cap_percentage", {}) or {}
         btc_dom = mcap_perc.get("btc")
@@ -505,7 +522,7 @@ def generate_ai_trade_plan(model, symbol: str, timeframe: str, balance: float,
     Zaman dilimi: {timeframe}
     Hesap büyüklüğü: {balance} USD
     Bu trade'de riske edilen tutar: {risk_amount} USD
-    Yön tercihi: {direction} (Long, Short veya Nötr)
+    Yön tercihi: {direction} (Long, Short veya Her İkisi)
     Trader modu: {trader_mode}
 
     Kullanıcı notları:
@@ -525,7 +542,7 @@ def generate_ai_trade_plan(model, symbol: str, timeframe: str, balance: float,
     - Eğer sadece tek yön mantıklıysa, diğer yön için "şu anda zayıf" gibi uyarı ekle.
 
     3️⃣ R/R ve Risk Yönetimi:
-    - Örnek pozisyon büyüklüğü (adet değil, mantıksal açıklama)
+    - Örnek pozisyon büyüklüğü (mantıksal açıklama)
     - Tahmini R/R oranları
     - Max riskin neden makul veya aşırı olduğuna dair yorum
 
@@ -676,473 +693,573 @@ with st.sidebar:
     st.caption(get_trader_mode_description(selected_mode))
 
 # =============================================================================
-# 5. ANA BÖLÜM – GRAFİK ANALİZİ
+# 5. ANA GÖVDE – TAB YAPISI
 # =============================================================================
 
-st.title("📈 AI Kripto Teknik Analiz Merkezi")
+st.title("🧠 AI Kripto Analist Pro")
 
-col_left, col_right = st.columns([2, 1])
+tab_analysis, tab_tools, tab_live, tab_planner, tab_history = st.tabs(
+    ["📊 Grafik Analizi", "🛠 Araçlar", "📈 Canlı Market", "🤖 Trade Planlayıcı", "📚 History"]
+)
 
-with col_left:
-    st.markdown("### 📤 Grafik Yükle")
-    uploaded_files = st.file_uploader(
-        "TradingView / borsa grafiği ekran görüntüsü (Max 15 görsel)",
-        type=["png", "jpg", "jpeg"],
-        accept_multiple_files=True
-    )
+# ------------------------ TAB 1: GRAFİK ANALİZİ ------------------------ #
+with tab_analysis:
+    col_left, col_right = st.columns([2, 1])
 
-    extra_notes = st.text_area(
-        "İsteğe bağlı not / ek bilgi",
-        help="Örn: 'BTCUSDT 4H, son düşüş sonrası durum' gibi."
-    )
-
-with col_right:
-    st.markdown("### ℹ️ Kullanım Notları")
-    st.markdown(
-        """
-        - Birden fazla grafiği aynı anda yükleyebilirsin.
-        - Her grafik için ayrı teknik analiz üretir.
-        - Analizler **öğretici ve temkinli** tasarlandı.
-        - Çıkan sonuçlar yatırım tavsiyesi değildir.
-        """
-    )
-
-if uploaded_files:
-    if len(uploaded_files) > 15:
-        st.error("⚠️ Maksimum 15 dosya yükleyebilirsiniz.")
-    else:
-        start_analysis = st.button("🔍 Analizi Başlat", type="primary")
-        if start_analysis:
-            if st.session_state.request_count + len(uploaded_files) > MAX_REQUESTS:
-                st.error("⚠️ Maksimum istek limitine ulaştınız. Sayfayı yenileyip yeni oturum başlatın.")
-            else:
-                if not st.session_state.api_status:
-                    st.error("⚠️ Önce sol menüden API bağlantısını yapmalısınız.")
-                else:
-                    model, err, resolved_name = get_gemini_model(
-                        st.session_state.api_key,
-                        st.session_state.model_name
-                    )
-                    if not model:
-                        safe_err = mask_error(err)
-                        st.error(f"Model oluşturulamadı: {safe_err}")
-                    else:
-                        if resolved_name and resolved_name != st.session_state.model_name:
-                            st.session_state.model_name = resolved_name
-                            st.info(f"Analiz modeli **{resolved_name}** olarak güncellendi.")
-
-                        st.session_state.request_count += len(uploaded_files)
-                        global_ctx = build_global_market_context()
-                        combined_extra = (extra_notes or "") + "\n\n" + global_ctx
-                        trader_mode = st.session_state.get("trader_mode", "Dengeli")
-
-                        st.markdown("---")
-                        st.subheader("🧠 Yapay Zeka Grafik Analizleri")
-                        progress_bar = st.progress(0)
-                        total = len(uploaded_files)
-
-                        for idx, uploaded_file in enumerate(uploaded_files, start=1):
-                            progress_bar.progress(idx / total)
-
-                            if not validate_image(uploaded_file):
-                                st.error(f"❌ Geçersiz dosya: {uploaded_file.name}")
-                                continue
-
-                            try:
-                                image = Image.open(uploaded_file).convert("RGB")
-                            except Exception as e:
-                                st.error(f"📁 {uploaded_file.name} açılamadı: {e}")
-                                continue
-
-                            col_img, col_txt = st.columns([1, 2])
-                            with col_img:
-                                st.image(image, caption=f"{uploaded_file.name}", use_container_width=True)
-
-                            with col_txt:
-                                with st.spinner("Grafik analiz ediliyor..."):
-                                    try:
-                                        text = analyze_chart_with_gemini(
-                                            model=model,
-                                            image=image,
-                                            extra_context=combined_extra,
-                                            trader_mode=trader_mode
-                                        )
-                                        st.markdown(text)
-                                    except Exception as e:
-                                        st.error(f"Analiz sırasında hata: {e}")
-
-                            st.markdown("---")
-
-                        progress_bar.empty()
-
-# =============================================================================
-# 6. YARDIMCI ARAÇLAR
-# =============================================================================
-
-st.markdown("<br>", unsafe_allow_html=True)
-st.subheader("🛠️ Yardımcı Araçlar")
-
-# ------------------------ AKILLI RİSK & LİKİDASYON HESAPLAYICI ------------------------ #
-with st.expander("🧮 Akıllı Risk, Marjin & Likidasyon Hesaplayıcı", expanded=False):
-
-    trader_mode = st.session_state.trader_mode
-
-    mode_recommendations = {
-        "Scalper": "Önerilen risk: **%0.2 – %0.5** • Çok dar stop • 1–5dk volatilitesine dikkat • Spread ve wick’e karşı tetikte ol.",
-        "Swing": "Önerilen risk: **%0.5 – %1.5** • Daha geniş stop • 2–3 TP’li yapı mantıklı.",
-        "Pozisyon": "Önerilen risk: **%0.25 – %0.75** • Günlük/haftalık trend kritik • Makro risklere dikkat.",
-        "Dengeli": "Önerilen risk: **%0.5 – %1.0** • R/R en az 1:2 hedeflenmeli."
-    }
-
-    st.markdown(
-        f"""
-        <div class="risk-card">
-            <b>🎯 Seçilen Trader Modu:</b> {trader_mode}<br>
-            <div class="risk-highlight">{mode_recommendations[trader_mode]}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.markdown("### ⚙️ Hesaplama Parametreleri")
-
-    col1, col2, col3 = st.columns(3)
-
-    balance = col1.number_input("💰 Toplam Kasa ($)", min_value=0.0, value=1000.0)
-
-    calc_type = col1.radio("Risk Türü", ["Yüzde", "Sabit Tutar"])
-    if calc_type == "Yüzde":
-        risk_pct = col1.number_input("Risk (%)", min_value=0.0, max_value=100.0, value=1.0)
-        risk_amount = balance * (risk_pct / 100) if balance > 0 else 0.0
-    else:
-        risk_amount = col1.number_input("Risk ($)", min_value=0.0, value=10.0)
-        risk_pct = (risk_amount / balance * 100) if balance > 0 else 0.0
-
-    leverage = col2.number_input("🔗 Kaldıraç (x)", min_value=1.0, value=1.0, step=1.0)
-    entry = col2.number_input("Giriş Fiyatı", min_value=0.0)
-    stop = col2.number_input("Stop Fiyatı", min_value=0.0)
-
-    exchange = col3.selectbox(
-        "🏦 Borsa / Ürün",
-        options=[
-            "Binance Futures (USDT-M)",
-            "Bybit USDT Perp",
-            "OKX Futures",
-            "Bitget Futures",
-            "Spot / Diğer"
-        ],
-        index=0
-    )
-
-    direction = col3.radio("Pozisyon Yönü", ["Long", "Short"], horizontal=True)
-
-    # Varsayılan maintenance margin oranları (kabaca, sadece tahmini)
-    default_mmr_map = {
-        "Binance Futures (USDT-M)": 0.004,
-        "Bybit USDT Perp": 0.004,
-        "OKX Futures": 0.004,
-        "Bitget Futures": 0.004,
-        "Spot / Diğer": 0.0
-    }
-    default_mmr = default_mmr_map.get(exchange, 0.004)
-
-    mmr = st.slider(
-        "Maintenance Margin Oranı (tahmini)",
-        min_value=0.0,
-        max_value=0.05,
-        value=float(default_mmr),
-        step=0.001,
-        help="Borsaya göre değişir. Bu değer yaklaşık bir tasfiye fiyatı hesaplamak içindir, %100 doğru olmayabilir."
-    )
-
-    tp1 = col3.number_input("🎯 TP1", min_value=0.0)
-    tp2 = col3.number_input("TP2", min_value=0.0)
-    tp3 = col3.number_input("TP3", min_value=0.0)
-
-    st.markdown("---")
-
-    if entry > 0 and stop > 0 and risk_amount > 0:
-        price_risk = abs(entry - stop)
-        if price_risk == 0:
-            st.error("Giriş ve stop aynı olamaz!")
-        else:
-            qty = risk_amount / price_risk
-            notional = qty * entry
-            margin = notional / leverage if leverage > 0 else notional
-            margin_pct = (margin / balance * 100) if balance > 0 else 0.0
-
-            colA, colB, colC = st.columns(3)
-            colA.metric("📦 Girilecek Adet", f"{qty:.4f}")
-            colB.metric("💼 Pozisyon Değeri", f"${notional:,.2f}")
-            colC.metric("🔒 Gerekli Marjin", f"${margin:,.2f}")
-
-            st.markdown(
-                f"""
-                <div class="risk-highlight">
-                    Kasaya oranla marjin: <b>%{margin_pct:.2f}</b><br>
-                    Gerçek risk: <b>${risk_amount:.2f}</b> ({risk_pct:.2f}%)
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-            # Tasfiye fiyatı (yaklaşık) – sadece futures ürünlerde
-            if exchange != "Spot / Diğer" and qty > 0 and leverage > 0:
-                notional = entry * qty
-                margin = notional / leverage
-                maint_margin = notional * mmr
-                loss_to_liq = margin - maint_margin
-                if loss_to_liq > 0:
-                    price_move = loss_to_liq / qty
-                    if direction == "Long":
-                        liq_price = entry - price_move
-                    else:
-                        liq_price = entry + price_move
-
-                    if liq_price > 0:
-                        st.markdown(
-                            f"""
-                            <div class="risk-highlight">
-                                Tahmini tasfiye fiyatı ({direction}): 
-                                <b>{liq_price:.6f}</b><br>
-                                <small>Not: Bu yaklaşık bir hesaplamadır, borsanın gerçek likidasyon fiyatıyla birebir uyuşmayabilir.</small>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                else:
-                    st.info("Bakiyeye göre tasfiye fiyatı hesaplanamadı (maintenance margin > marjin).")
-
-            elif exchange == "Spot / Diğer":
-                st.info("Spot işlemlerde tasfiye fiyatı yoktur; sadece stop-loss ile risk yönetimi yapılır.")
-
-            # TP ve R/R analizi
-            st.markdown("### 📊 R:R ve TP Analizi")
-            def compute_rr(tp_price: float):
-                if tp_price <= 0 or tp_price == entry:
-                    return None
-                reward = abs(tp_price - entry)
-                rr = reward / price_risk
-                profit = reward * qty
-                return rr, profit
-
-            any_tp = False
-            for label, tp_val in [("TP1", tp1), ("TP2", tp2), ("TP3", tp3)]:
-                res = compute_rr(tp_val)
-                if res is None:
-                    continue
-                any_tp = True
-                rr, profit = res
-                st.success(f"**{label} = {tp_val}** → Tahmini Kâr: **${profit:.2f}** | R:R = **{rr:.2f}**")
-
-            if not any_tp:
-                st.caption("TP fiyatları girdiğinde burada R:R oranlarını görebilirsin.")
-
-            st.markdown("### ⚠️ Mod Bazlı Öneriler")
-            if trader_mode == "Scalper":
-                st.warning("⚡ Scalper modunda geniş stop ve yüksek kaldıraç çok risklidir. Spread ve wick’lere dikkat et.")
-            elif trader_mode == "Swing":
-                st.info("📈 Swing işlemlerinde 4H/1D trendi, EMA50/200 birlikteliği ve R/R ≥ 2 çok önemli.")
-            elif trader_mode == "Pozisyon":
-                st.warning("📉 Pozisyon işlemlerinde BTC dominansı, makro veri ve uzun vadeli trend kritik öneme sahiptir.")
-            else:
-                st.info("⚖️ Dengeli mod için ATR tabanlı stop ve kademeli TP iyi çalışır.")
-    else:
-        st.info("Hesaplama için kasa, risk, giriş ve stop değerlerini doldurun.")
-
-# ------------------------ PİYASA PANELİ ------------------------ #
-with st.expander("🌍 Piyasa Paneli", expanded=False):
-    cm1, cm2 = st.columns([1, 2])
-
-    with cm1:
-        st.markdown("##### Crypto Fear & Greed Index")
-        if st.button("🔄 F&G Verisini Yenile"):
-            get_fear_and_greed_index.clear()
-            st.rerun()
-        val, lbl, fetched_at = get_fear_and_greed_index()
-        st.plotly_chart(create_gauge_chart(val, lbl), use_container_width=True)
-        st.caption(
-            f"Index: **{val}** ({lbl})  \n"
-            f"Güncelleme zamanı (UTC): {fetched_at.strftime('%Y-%m-%d %H:%M:%S')}"
+    with col_left:
+        st.markdown("### 📤 Grafik Yükle")
+        uploaded_files = st.file_uploader(
+            "TradingView / borsa grafiği ekran görüntüsü (Max 15 görsel)",
+            type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+            key="chart_upload"
         )
 
-    with cm2:
-        tab1, tab2 = st.tabs(["Kripto Piyasa Özeti", "Makro Gündem"])
-        with tab1:
-            mkt = get_crypto_market_overview()
-            if not mkt:
-                st.warning("Piyasa verileri şu anda çekilemedi. Sonra tekrar deneyin.")
+        extra_notes = st.text_area(
+            "İsteğe bağlı not / ek bilgi",
+            help="Örn: 'BTCUSDT 4H, son düşüş sonrası durum' gibi.",
+            key="chart_notes"
+        )
+
+    with col_right:
+        st.markdown("### ℹ️ Kullanım Notları")
+        st.markdown(
+            """
+            <div class="section-card">
+            • Birden fazla grafiği aynı anda yükleyebilirsin.  
+            • Her grafik için ayrı teknik analiz üretilir.  
+            • Analizler <b>öğretici ve temkinli</b> olarak tasarlanmıştır.  
+            • Çıkan sonuçlar yatırım tavsiyesi değildir.
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    if uploaded_files:
+        if len(uploaded_files) > 15:
+            st.error("⚠️ Maksimum 15 dosya yükleyebilirsiniz.")
+        else:
+            start_analysis = st.button("🔍 Analizi Başlat", type="primary")
+            if start_analysis:
+                if st.session_state.request_count + len(uploaded_files) > MAX_REQUESTS:
+                    st.error("⚠️ Maksimum istek limitine ulaştınız. Sayfayı yenileyip yeni oturum başlatın.")
+                else:
+                    if not st.session_state.api_status:
+                        st.error("⚠️ Önce sol menüden API bağlantısını yapmalısınız.")
+                    else:
+                        model, err, resolved_name = get_gemini_model(
+                            st.session_state.api_key,
+                            st.session_state.model_name
+                        )
+                        if not model:
+                            safe_err = mask_error(err)
+                            st.error(f"Model oluşturulamadı: {safe_err}")
+                        else:
+                            if resolved_name and resolved_name != st.session_state.model_name:
+                                st.session_state.model_name = resolved_name
+                                st.info(f"Analiz modeli **{resolved_name}** olarak güncellendi.")
+
+                            st.session_state.request_count += len(uploaded_files)
+                            global_ctx = build_global_market_context()
+                            combined_extra = (extra_notes or "") + "\n\n" + global_ctx
+                            trader_mode = st.session_state.get("trader_mode", "Dengeli")
+
+                            st.markdown("---")
+                            st.subheader("🧠 Yapay Zeka Grafik Analizleri")
+                            progress_bar = st.progress(0)
+                            total = len(uploaded_files)
+
+                            for idx, uploaded_file in enumerate(uploaded_files, start=1):
+                                progress_bar.progress(idx / total)
+
+                                if not validate_image(uploaded_file):
+                                    st.error(f"❌ Geçersiz dosya: {uploaded_file.name}")
+                                    continue
+
+                                try:
+                                    image = Image.open(uploaded_file).convert("RGB")
+                                except Exception as e:
+                                    st.error(f"📁 {uploaded_file.name} açılamadı: {e}")
+                                    continue
+
+                                col_img, col_txt = st.columns([1, 2])
+                                with col_img:
+                                    st.image(image, caption=f"{uploaded_file.name}", use_container_width=True)
+
+                                with col_txt:
+                                    with st.spinner("Grafik analiz ediliyor..."):
+                                        try:
+                                            text = analyze_chart_with_gemini(
+                                                model=model,
+                                                image=image,
+                                                extra_context=combined_extra,
+                                                trader_mode=trader_mode
+                                            )
+                                            st.markdown(text)
+                                        except Exception as e:
+                                            st.error(f"Analiz sırasında hata: {e}")
+
+                                st.markdown("---")
+
+                            progress_bar.empty()
+
+# ------------------------ TAB 2: ARAÇLAR (RİSK + PİYASA PANELİ) ------------------------ #
+with tab_tools:
+    st.markdown("### 🧮 Akıllı Risk, Marjin & Likidasyon Hesaplayıcı")
+
+    with st.expander("Akıllı Risk Hesaplayıcı", expanded=True):
+        trader_mode = st.session_state.trader_mode
+
+        mode_recommendations = {
+            "Scalper": "Önerilen risk: **%0.2 – %0.5** • Çok dar stop • 1–5dk volatilitesine dikkat • Spread ve wick’e karşı tetikte ol.",
+            "Swing": "Önerilen risk: **%0.5 – %1.5** • Daha geniş stop • 2–3 TP’li yapı mantıklı.",
+            "Pozisyon": "Önerilen risk: **%0.25 – %0.75** • Günlük/haftalık trend kritik • Makro risklere dikkat.",
+            "Dengeli": "Önerilen risk: **%0.5 – %1.0** • R/R en az 1:2 hedeflenmeli."
+        }
+
+        st.markdown(
+            f"""
+            <div class="risk-card">
+                <b>🎯 Seçilen Trader Modu:</b> {trader_mode}<br>
+                <div class="risk-highlight">{mode_recommendations[trader_mode]}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        symbol_risk = col1.text_input("Sembol (opsiyonel)", value="BTCUSDT")
+        balance = col1.number_input("💰 Toplam Kasa ($)", min_value=0.0, value=1000.0)
+
+        calc_type = col1.radio("Risk Türü", ["Yüzde", "Sabit Tutar"])
+        if calc_type == "Yüzde":
+            risk_pct = col1.number_input("Risk (%)", min_value=0.0, max_value=100.0, value=1.0)
+            risk_amount = balance * (risk_pct / 100) if balance > 0 else 0.0
+        else:
+            risk_amount = col1.number_input("Risk ($)", min_value=0.0, value=10.0)
+            risk_pct = (risk_amount / balance * 100) if balance > 0 else 0.0
+
+        leverage = col2.number_input("🔗 Kaldıraç (x)", min_value=1.0, value=1.0, step=1.0)
+        entry = col2.number_input("Giriş Fiyatı", min_value=0.0)
+        stop = col2.number_input("Stop Fiyatı", min_value=0.0)
+
+        exchange = col3.selectbox(
+            "🏦 Borsa / Ürün",
+            options=[
+                "Binance Futures (USDT-M)",
+                "Bybit USDT Perp",
+                "OKX Futures",
+                "Bitget Futures",
+                "Spot / Diğer"
+            ],
+            index=0
+        )
+
+        direction = col3.radio("Pozisyon Yönü", ["Long", "Short"], horizontal=True)
+        tp1 = col3.number_input("🎯 TP1", min_value=0.0)
+        tp2 = col3.number_input("TP2", min_value=0.0)
+        tp3 = col3.number_input("TP3", min_value=0.0)
+
+        default_mmr_map = {
+            "Binance Futures (USDT-M)": 0.004,
+            "Bybit USDT Perp": 0.004,
+            "OKX Futures": 0.004,
+            "Bitget Futures": 0.004,
+            "Spot / Diğer": 0.0
+        }
+        default_mmr = float(default_mmr_map.get(exchange, 0.004))
+
+        mmr = st.slider(
+            "Maintenance Margin Oranı (tahmini)",
+            min_value=0.0,
+            max_value=0.05,
+            value=default_mmr,
+            step=0.001,
+            help="Borsaya göre değişir. Bu değer yaklaşık bir tasfiye fiyatı hesaplamak içindir, %100 doğru olmayabilir."
+        )
+
+        st.markdown("---")
+
+        liq_price_val = None
+
+        if entry > 0 and stop > 0 and risk_amount > 0:
+            price_risk = abs(entry - stop)
+            if price_risk == 0:
+                st.error("Giriş ve stop aynı olamaz!")
             else:
-                cA, cB, cC = st.columns(3)
-                if isinstance(mkt.get("btc_dom"), (int, float)):
-                    cA.metric("BTC Dominance", f"{mkt['btc_dom']:.2f}%")
-                else:
-                    cA.metric("BTC Dominance", "-")
+                qty = risk_amount / price_risk
+                notional = qty * entry
+                margin = notional / leverage if leverage > 0 else notional
+                margin_pct = (margin / balance * 100) if balance > 0 else 0.0
 
-                if isinstance(mkt.get("alt_dom"), (int, float)):
-                    cB.metric("Altcoin Dominance (≈)", f"{mkt['alt_dom']:.2f}%")
-                else:
-                    cB.metric("Altcoin Dominance (≈)", "-")
+                colA, colB, colC = st.columns(3)
+                colA.metric("📦 Girilecek Adet", f"{qty:.4f}")
+                colB.metric("💼 Pozisyon Değeri", f"${notional:,.2f}")
+                colC.metric("🔒 Gerekli Marjin", f"${margin:,.2f}")
 
-                if isinstance(mkt.get("eth_dom"), (int, float)):
-                    cC.metric("ETH Dominance", f"{mkt['eth_dom']:.2f}%")
-                else:
-                    cC.metric("ETH Dominance", "-")
-
-                cD, cE, cF = st.columns(3)
-                cD.metric("Toplam Market Cap", format_usd_compact(mkt.get("total_mcap")))
-                cE.metric("24h Hacim", format_usd_compact(mkt.get("total_volume")))
-                if isinstance(mkt.get("mcap_change_24h"), (int, float)):
-                    cF.metric("Market Cap 24h %", f"{mkt['mcap_change_24h']:.2f}%")
-                else:
-                    cF.metric("Market Cap 24h %", "-")
-
-                st.caption(
-                    "Veri kaynağı: CoinGecko Global API  \n"
-                    f"Güncelleme zamanı (UTC): {mkt['fetched_at'].strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-        with tab2:
-            df = get_mock_macro_events()
-            st.markdown("#### Yaklaşan Makro Veriler (Örnek)")
-            for _, r in df.iterrows():
-                st.warning(
-                    f"**{r['date'].strftime('%d %b %Y')} {r['time']}** - "
-                    f"{r['currency']} - {r['event']} (Beklenti: {r['forecast']})"
+                st.markdown(
+                    f"""
+                    <div class="risk-highlight">
+                        Kasaya oranla marjin: <b>%{margin_pct:.2f}</b><br>
+                        Gerçek risk: <b>${risk_amount:.2f}</b> ({risk_pct:.2f}%)
+                    </div>
+                    """,
+                    unsafe_allow_html=True
                 )
 
-# ------------------------ CANLI MARKET ANALİZİ ------------------------ #
-st.markdown("<br>", unsafe_allow_html=True)
-st.subheader("📊 Canlı Market Analizi (OHLC + İndikatörler)")
+                if exchange != "Spot / Diğer" and qty > 0 and leverage > 0:
+                    notional = entry * qty
+                    margin = notional / leverage
+                    maint_margin = notional * mmr
+                    loss_to_liq = margin - maint_margin
+                    if loss_to_liq > 0:
+                        price_move = loss_to_liq / qty
+                        if direction == "Long":
+                            liq_price = entry - price_move
+                        else:
+                            liq_price = entry + price_move
 
-with st.expander("📥 CoinGecko OHLC + RSI / MACD / EMA / Bollinger", expanded=False):
-    c1, c2, c3 = st.columns(3)
+                        if liq_price > 0:
+                            liq_price_val = liq_price
+                            st.markdown(
+                                f"""
+                                <div class="risk-highlight">
+                                    Tahmini tasfiye fiyatı ({direction}): 
+                                    <b>{liq_price:.6f}</b><br>
+                                    <span class="small-muted">
+                                    Not: Bu yaklaşık bir hesaplamadır, borsanın gerçek likidasyon fiyatıyla birebir uyuşmayabilir.
+                                    </span>
+                                </div>
+                                """,
+                                unsafe_allow_html=True
+                            )
+                    else:
+                        st.info("Bakiyeye göre tasfiye fiyatı hesaplanamadı (maintenance margin > marjin).")
+                else:
+                    st.info("Spot işlemlerde tasfiye fiyatı yoktur; sadece stop-loss ile risk yönetimi yapılır.")
 
-    coin_choice = c1.selectbox(
-        "Coin",
-        options=[
-            "Bitcoin (BTC)",
-            "Ethereum (ETH)",
-            "BNB",
-            "Solana (SOL)",
-            "XRP",
-            "Dogecoin (DOGE)",
-        ],
-        index=0
-    )
+                st.markdown("#### 📊 R:R ve TP Analizi")
+                def compute_rr(tp_price: float):
+                    if tp_price <= 0 or tp_price == entry:
+                        return None
+                    reward = abs(tp_price - entry)
+                    rr = reward / price_risk
+                    profit = reward * qty
+                    return rr, profit
 
-    coin_id_map = {
-        "Bitcoin (BTC)": "bitcoin",
-        "Ethereum (ETH)": "ethereum",
-        "BNB": "binancecoin",
-        "Solana (SOL)": "solana",
-        "XRP": "ripple",
-        "Dogecoin (DOGE)": "dogecoin",
-    }
-    coin_id = coin_id_map[coin_choice]
+                any_tp = False
+                for label, tp_val in [("TP1", tp1), ("TP2", tp2), ("TP3", tp3)]:
+                    res = compute_rr(tp_val)
+                    if res is None:
+                        continue
+                    any_tp = True
+                    rr, profit = res
+                    st.success(f"**{label} = {tp_val}** → Tahmini Kâr: **${profit:.2f}** | R:R = **{rr:.2f}**")
 
-    days = c2.selectbox(
-        "Zaman Aralığı",
-        options=[1, 7, 30],
-        format_func=lambda x: f"{x} gün",
-        index=0
-    )
+                if not any_tp:
+                    st.caption("TP fiyatları girdiğinde burada R:R oranlarını görebilirsin.")
 
-    vs_currency = c3.selectbox("Karşı Para Birimi", options=["usd"], index=0)
+                st.markdown("#### ⚠️ Mod Bazlı Öneriler")
+                if trader_mode == "Scalper":
+                    st.warning("⚡ Scalper modunda geniş stop ve yüksek kaldıraç çok risklidir. Spread ve wick’lere dikkat et.")
+                elif trader_mode == "Swing":
+                    st.info("📈 Swing işlemlerinde 4H/1D trendi, EMA50/200 birlikteliği ve R/R ≥ 2 çok önemli.")
+                elif trader_mode == "Pozisyon":
+                    st.warning("📉 Pozisyon işlemlerinde BTC dominansı, makro veri ve uzun vadeli trend kritik öneme sahiptir.")
+                else:
+                    st.info("⚖️ Dengeli mod için ATR tabanlı stop ve kademeli TP iyi çalışır.")
 
-    if st.button("📥 Veriyi Çek ve Hesapla"):
-        with st.spinner("Veriler çekiliyor ve indikatörler hesaplanıyor..."):
-            df_ohlc = get_ohlc_data(coin_id, vs_currency, days)
-            if df_ohlc is None or df_ohlc.empty:
-                st.error("OHLC verisi alınamadı. Bir süre sonra tekrar deneyin.")
-            else:
-                df_ind = compute_indicators(df_ohlc)
-                fig = create_live_market_figure(df_ind)
-                st.plotly_chart(fig, use_container_width=True)
+                # History'e kaydet
+                if st.button("💾 Bu Hesabı History'e Kaydet"):
+                    st.session_state.risk_history.append({
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "symbol": symbol_risk,
+                        "exchange": exchange,
+                        "mode": trader_mode,
+                        "direction": direction,
+                        "balance": balance,
+                        "risk_type": calc_type,
+                        "risk_pct": risk_pct,
+                        "risk_amount": risk_amount,
+                        "leverage": leverage,
+                        "entry": entry,
+                        "stop": stop,
+                        "tp1": tp1,
+                        "tp2": tp2,
+                        "tp3": tp3,
+                        "quantity": qty,
+                        "margin": margin,
+                        "liq_price": liq_price_val,
+                    })
+                    st.success("✅ Bu hesaplama history'e eklendi.")
+            # price_risk != 0
+        # all inputs ok
+    # expander
 
-                last = df_ind.iloc[-1]
-                colX, colY, colZ = st.columns(3)
-                colX.metric("Son Kapanış", f"{last['close']:.4f} {vs_currency.upper()}")
-                if not np.isnan(last.get("ema20", np.nan)):
-                    colY.metric("EMA 20", f"{last['ema20']:.4f}")
-                if not np.isnan(last.get("rsi14", np.nan)):
-                    colZ.metric("RSI 14", f"{last['rsi14']:.2f}")
+    st.markdown("### 🌍 Piyasa Paneli")
+    with st.expander("Global Duyarlılık & Makro (Örnek)", expanded=False):
+        cm1, cm2 = st.columns([1, 2])
 
-                st.caption("Not: Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa datası değildir.")
+        with cm1:
+            st.markdown("##### Crypto Fear & Greed Index")
+            if st.button("🔄 F&G Verisini Yenile"):
+                get_fear_and_greed_index.clear()
+                st.rerun()
+            val, lbl, fetched_at = get_fear_and_greed_index()
+            st.plotly_chart(create_gauge_chart(val, lbl), use_container_width=True)
+            st.caption(
+                f"Index: **{val}** ({lbl})  \n"
+                f"Güncelleme zamanı (UTC): {fetched_at.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
 
-# ------------------------ AI TRADE PLANLAYICI ------------------------ #
-st.markdown("<br>", unsafe_allow_html=True)
-st.subheader("🤖 AI Trade Planlayıcı")
+        with cm2:
+            tab1, tab2 = st.tabs(["Kripto Piyasa Özeti", "Makro Gündem"])
+            with tab1:
+                mkt = get_crypto_market_overview()
+                if not mkt:
+                    st.warning("Piyasa verileri şu anda çekilemedi. Sonra tekrar deneyin.")
+                else:
+                    cA, cB, cC = st.columns(3)
+                    if isinstance(mkt.get("btc_dom"), (int, float)):
+                        cA.metric("BTC Dominance", f"{mkt['btc_dom']:.2f}%")
+                    else:
+                        cA.metric("BTC Dominance", "-")
 
-with st.expander("🧠 Otomatik Trade Planı Oluştur (AI Destekli)", expanded=False):
+                    if isinstance(mkt.get("alt_dom"), (int, float)):
+                        cB.metric("Altcoin Dominance (≈)", f"{mkt['alt_dom']:.2f}%")
+                    else:
+                        cB.metric("Altcoin Dominance (≈)", "-")
+
+                    if isinstance(mkt.get("eth_dom"), (int, float)):
+                        cC.metric("ETH Dominance", f"{mkt['eth_dom']:.2f}%")
+                    else:
+                        cC.metric("ETH Dominance", "-")
+
+                    cD, cE, cF = st.columns(3)
+                    cD.metric("Toplam Market Cap", format_usd_compact(mkt.get("total_mcap")))
+                    cE.metric("24h Hacim", format_usd_compact(mkt.get("total_volume")))
+                    if isinstance(mkt.get("mcap_change_24h"), (int, float)):
+                        cF.metric("Market Cap 24h %", f"{mkt['mcap_change_24h']:.2f}%")
+                    else:
+                        cF.metric("Market Cap 24h %", "-")
+
+                    st.caption(
+                        "Veri kaynağı: CoinGecko Global API  \n"
+                        f"Güncelleme zamanı (UTC): {mkt['fetched_at'].strftime('%Y-%m-%d %H:%M:%S')}"
+                    )
+            with tab2:
+                df = get_mock_macro_events()
+                st.markdown("#### Yaklaşan Makro Veriler (Örnek)")
+                for _, r in df.iterrows():
+                    st.warning(
+                        f"**{r['date'].strftime('%d %b %Y')} {r['time']}** - "
+                        f"{r['currency']} - {r['event']} (Beklenti: {r['forecast']})"
+                    )
+
+# ------------------------ TAB 3: CANLI MARKET ANALİZİ ------------------------ #
+with tab_live:
+    st.markdown("### 📊 Canlı Market Analizi (OHLC + İndikatörler)")
+
+    with st.expander("📥 CoinGecko OHLC + RSI / MACD / EMA / Bollinger", expanded=True):
+        c1, c2, c3 = st.columns(3)
+
+        coin_choice = c1.selectbox(
+            "Coin",
+            options=[
+                "Bitcoin (BTC)",
+                "Ethereum (ETH)",
+                "BNB",
+                "Solana (SOL)",
+                "XRP",
+                "Dogecoin (DOGE)",
+            ],
+            index=0
+        )
+
+        coin_id_map = {
+            "Bitcoin (BTC)": "bitcoin",
+            "Ethereum (ETH)": "ethereum",
+            "BNB": "binancecoin",
+            "Solana (SOL)": "solana",
+            "XRP": "ripple",
+            "Dogecoin (DOGE)": "dogecoin",
+        }
+        coin_id = coin_id_map[coin_choice]
+
+        days = c2.selectbox(
+            "Zaman Aralığı",
+            options=[1, 7, 30],
+            format_func=lambda x: f"{x} gün",
+            index=0
+        )
+
+        vs_currency = c3.selectbox("Karşı Para Birimi", options=["usd"], index=0)
+
+        if st.button("📥 Veriyi Çek ve Hesapla"):
+            with st.spinner("Veriler çekiliyor ve indikatörler hesaplanıyor..."):
+                df_ohlc = get_ohlc_data(coin_id, vs_currency, days)
+                if df_ohlc is None or df_ohlc.empty:
+                    st.error("OHLC verisi alınamadı. Bir süre sonra tekrar deneyin.")
+                else:
+                    df_ind = compute_indicators(df_ohlc)
+                    fig = create_live_market_figure(df_ind)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    last = df_ind.iloc[-1]
+                    colX, colY, colZ = st.columns(3)
+                    colX.metric("Son Kapanış", f"{last['close']:.4f} {vs_currency.upper()}")
+                    if not np.isnan(last.get("ema20", np.nan)):
+                        colY.metric("EMA 20", f"{last['ema20']:.4f}")
+                    if not np.isnan(last.get("rsi14", np.nan)):
+                        colZ.metric("RSI 14", f"{last['rsi14']:.2f}")
+
+                    st.caption("Not: Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa datası değildir.")
+
+# ------------------------ TAB 4: AI TRADE PLANLAYICI ------------------------ #
+with tab_planner:
+    st.markdown("### 🤖 AI Trade Planlayıcı")
+
     st.markdown(
         """
         <div class="ai-card">
-        Bu bölüm, seçtiğin parametrelere göre **örnek bir trade planı** oluşturur.  
-        <br>Trade'leri birebir kopyalamak yerine, **eğitim ve fikir amaçlı** kullanman önerilir.
+        Bu bölüm, seçtiğin parametrelere göre <b>örnek bir trade planı</b> oluşturur.  
+        Planlar, eğitim ve strateji geliştirme amaçlıdır; yatırım tavsiyesi değildir.
         </div>
         """,
         unsafe_allow_html=True
     )
 
-    c1, c2, c3 = st.columns(3)
-    symbol = c1.text_input("Sembol", value="BTCUSDT")
-    timeframe = c1.selectbox("Zaman Dilimi", ["1m", "5m", "15m", "1H", "4H", "1D"], index=4)
+    with st.expander("🧠 Otomatik Trade Planı Oluştur (AI Destekli)", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        symbol = c1.text_input("Sembol", value="BTCUSDT")
+        timeframe = c1.selectbox("Zaman Dilimi", ["1m", "5m", "15m", "1H", "4H", "1D"], index=4)
 
-    plan_direction = c2.radio("Yön Tercihi", ["Long", "Short", "Her İkisi"], index=2)
+        plan_direction = c2.radio("Yön Tercihi", ["Long", "Short", "Her İkisi"], index=2)
 
-    plan_balance = c2.number_input("Hesap Büyüklüğü (USD)", min_value=0.0, value=1000.0)
-    plan_risk_pct = c2.number_input("Bu trade'de risk (%)", min_value=0.0, max_value=100.0, value=1.0)
+        plan_balance = c2.number_input("Hesap Büyüklüğü (USD)", min_value=0.0, value=1000.0)
+        plan_risk_pct = c2.number_input("Bu trade'de risk (%)", min_value=0.0, max_value=100.0, value=1.0)
 
-    plan_mode = c3.selectbox(
-        "Planlama Modu (Trader Tarzı)",
-        ["Aynı (Sidebar'daki)", "Scalper", "Swing", "Pozisyon", "Dengeli"],
-        index=0
-    )
+        plan_mode = c3.selectbox(
+            "Planlama Modu (Trader Tarzı)",
+            ["Aynı (Sidebar'daki)", "Scalper", "Swing", "Pozisyon", "Dengeli"],
+            index=0
+        )
 
-    extra_plan_notes = st.text_area(
-        "Ek Notlar (opsiyonel)",
-        help="Örn: 'Yalnızca trend yönünde işlemler', 'FED açıklaması sonrası' vb."
-    )
+        extra_plan_notes = st.text_area(
+            "Ek Notlar (opsiyonel)",
+            help="Örn: 'Yalnızca trend yönünde işlemler', 'FED açıklaması sonrası' vb.",
+            key="plan_notes"
+        )
 
-    if st.button("📋 Trade Planı Oluştur"):
-        if not st.session_state.api_status:
-            st.error("Önce sol menüden API bağlantısını yapmalısın (Gemini API key).")
-        else:
-            model, err, resolved_name = get_gemini_model(
-                st.session_state.api_key,
-                st.session_state.model_name
-            )
-            if not model:
-                safe_err = mask_error(err)
-                st.error(f"Model oluşturulamadı: {safe_err}")
+        if st.button("📋 Trade Planı Oluştur"):
+            if not st.session_state.api_status:
+                st.error("Önce sol menüden API bağlantısını yapmalısın (Gemini API key).")
             else:
-                if resolved_name and resolved_name != st.session_state.model_name:
-                    st.session_state.model_name = resolved_name
-                    st.info(f"Planlama modeli **{resolved_name}** olarak güncellendi.")
-
-                risk_amount = plan_balance * (plan_risk_pct / 100.0) if plan_balance > 0 else 0.0
-                if plan_mode == "Aynı (Sidebar'daki)":
-                    effective_mode = st.session_state.trader_mode
+                model, err, resolved_name = get_gemini_model(
+                    st.session_state.api_key,
+                    st.session_state.model_name
+                )
+                if not model:
+                    safe_err = mask_error(err)
+                    st.error(f"Model oluşturulamadı: {safe_err}")
                 else:
-                    effective_mode = plan_mode
+                    if resolved_name and resolved_name != st.session_state.model_name:
+                        st.session_state.model_name = resolved_name
+                        st.info(f"Planlama modeli **{resolved_name}** olarak güncellendi.")
 
-                global_ctx = build_global_market_context()
+                    risk_amount = plan_balance * (plan_risk_pct / 100.0) if plan_balance > 0 else 0.0
+                    if plan_mode == "Aynı (Sidebar'daki)":
+                        effective_mode = st.session_state.trader_mode
+                    else:
+                        effective_mode = plan_mode
 
-                with st.spinner("AI trade planı hazırlanıyor..."):
-                    try:
-                        plan_text = generate_ai_trade_plan(
-                            model=model,
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            balance=plan_balance,
-                            risk_amount=risk_amount,
-                            direction=plan_direction,
-                            trader_mode=effective_mode,
-                            extra_notes=extra_plan_notes,
-                            global_ctx=global_ctx
+                    global_ctx = build_global_market_context()
+
+                    with st.spinner("AI trade planı hazırlanıyor..."):
+                        try:
+                            plan_text = generate_ai_trade_plan(
+                                model=model,
+                                symbol=symbol,
+                                timeframe=timeframe,
+                                balance=plan_balance,
+                                risk_amount=risk_amount,
+                                direction=plan_direction,
+                                trader_mode=effective_mode,
+                                extra_notes=extra_plan_notes,
+                                global_ctx=global_ctx
+                            )
+                            st.markdown(plan_text)
+
+                            # History'e otomatik kaydet
+                            st.session_state.plan_history.append({
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "symbol": symbol,
+                                "timeframe": timeframe,
+                                "direction": plan_direction,
+                                "mode": effective_mode,
+                                "balance": plan_balance,
+                                "risk_pct": plan_risk_pct,
+                                "risk_amount": risk_amount,
+                                "notes": extra_plan_notes,
+                                "plan_text": plan_text,
+                            })
+                            st.success("✅ Trade planı history'e kaydedildi.")
+                        except Exception as e:
+                            st.error(f"Plan oluşturulurken hata oluştu: {e}")
+
+# ------------------------ TAB 5: HISTORY ------------------------ #
+with tab_history:
+    st.markdown("### 📚 History (Bu Oturum)")
+
+    if not st.session_state.risk_history and not st.session_state.plan_history:
+        st.info("Bu oturumda henüz kayıtlı bir risk hesabı veya trade planı yok.")
+    else:
+        col_clear1, col_clear2 = st.columns(2)
+        if col_clear1.button("🧹 Risk History'yi Temizle"):
+            st.session_state.risk_history = []
+            st.success("Risk history temizlendi.")
+        if col_clear2.button("🧹 Plan History'yi Temizle"):
+            st.session_state.plan_history = []
+            st.success("Plan history temizlendi.")
+
+        st.markdown("---")
+
+        sub_tab1, sub_tab2 = st.tabs(["🧮 Risk Hesaplamaları", "🤖 AI Trade Planları"])
+
+        with sub_tab1:
+            if not st.session_state.risk_history:
+                st.info("Henüz kaydedilmiş risk hesaplaması yok.")
+            else:
+                df_risk = pd.DataFrame(st.session_state.risk_history)
+                st.dataframe(
+                    df_risk,
+                    use_container_width=True,
+                    hide_index=True
+                )
+                st.caption("Not: Bu tablo yalnızca mevcut oturum süresince saklanır.")
+
+        with sub_tab2:
+            if not st.session_state.plan_history:
+                st.info("Henüz kaydedilmiş bir trade planı yok.")
+            else:
+                for i, rec in enumerate(st.session_state.plan_history[::-1], start=1):
+                    header = (
+                        f"#{i} | {rec['timestamp']} • {rec['symbol']} "
+                        f"({rec['timeframe']}, {rec['mode']}, {rec['direction']})"
+                    )
+                    with st.expander(header, expanded=False):
+                        st.markdown(
+                            f"""
+                            <span class="history-badge">Risk: {rec['risk_pct']:.2f}% (~${rec['risk_amount']:.2f})</span>
+                            <span class="history-badge">Hesap: ${rec['balance']:.2f}</span>
+                            """,
+                            unsafe_allow_html=True
                         )
-                        st.markdown(plan_text)
-                    except Exception as e:
-                        st.error(f"Plan oluşturulurken hata oluştu: {e}")
+                            # Plan metni
+                        st.markdown(rec["plan_text"])
+                        if rec.get("notes"):
+                            st.markdown("**Notlar:**")
+                            st.markdown(rec["notes"])
 
 st.caption("⚠️ Buradaki tüm analizler ve planlar eğitim amaçlıdır, yatırım tavsiyesi değildir.")
