@@ -1,9 +1,8 @@
 streamlit
+google-generativeai
 pandas
+numpy
 requests
 plotly
-google-generativeai
-yfinance
-Pillow
+pillow
 streamlit-autorefresh
-
