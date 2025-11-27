@@ -8,6 +8,12 @@ from PIL import Image
 from datetime import datetime, timedelta
 import numpy as np
 
+# Otomatik yenileme (opsiyonel)
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    st_autorefresh = None
+
 # =============================================================================
 # 1. GENEL AYARLAR
 # =============================================================================
@@ -148,6 +154,7 @@ def get_fear_and_greed_index():
 
 @st.cache_data(ttl=300)
 def get_crypto_market_overview():
+    # Global market özeti hala CoinGecko'dan geliyor (OHLC için değil, sadece toplam market).
     url = "https://api.coingecko.com/api/v3/global"
     try:
         r = requests.get(url, timeout=10)
@@ -177,8 +184,9 @@ def get_crypto_market_overview():
     except Exception:
         return None
 
+
 # -------------------------------------------------------------------------
-# BINANCE & OKX & FALLBACK COINGECKO OHLC VERİ ÇEKME (CANLI)
+# BINANCE / OKX / COINBASE / BYBIT / UPBIT OHLC VERİ ÇEKME
 # -------------------------------------------------------------------------
 
 @st.cache_data(ttl=60)
@@ -250,43 +258,133 @@ def get_ohlc_okx(inst_id: str, bar: str = "1H", limit: int = 200):
 
 
 @st.cache_data(ttl=60)
-def get_ohlc_coingecko(coin_id: str, interval_hint: str = "1h", limit: int = 200):
+def get_ohlc_coinbase(product_id: str, granularity: int = 3600, limit: int = 200):
     """
-    CoinGecko OHLC fallback.
-    /coins/{id}/ohlc?vs_currency=usd&days=N
+    Coinbase Exchange OHLC verisi.
+    /products/{product_id}/candles
+    Dönüş: [ time, low, high, open, close, volume ]
     """
-    if interval_hint in ["1m", "5m", "15m"]:
-        days = 1
-    elif interval_hint in ["1h", "4h"]:
-        days = 7
-    else:  # "1d" vb.
-        days = 30
-
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
-    params = {"vs_currency": "usd", "days": days}
+    url = f"https://api.exchange.coinbase.com/products/{product_id}/candles"
+    params = {"granularity": granularity}
     try:
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         raw = r.json()
         if not raw:
-            return None, "CoinGecko OHLC boş veri döndürdü."
+            return None, "Coinbase API boş veri döndürdü."
+        # Zaman en eski → en yeni
+        raw_sorted = sorted(raw, key=lambda x: x[0])
         data = []
-        for k in raw:
-            # [timestamp, open, high, low, close]
+        for row in raw_sorted[-limit:]:
+            ts, low, high, open_, close, volume = row
             data.append({
-                "time": pd.to_datetime(k[0], unit="ms"),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": 0.0,
+                "time": pd.to_datetime(ts, unit="s"),
+                "open": float(open_),
+                "high": float(high),
+                "low": float(low),
+                "close": float(close),
+                "volume": float(volume),
             })
         df = pd.DataFrame(data).sort_values("time")
-        if len(df) > limit:
-            df = df.iloc[-limit:]
         return df, None
     except Exception as e:
-        return None, f"CoinGecko OHLC hatası: {e}"
+        return None, f"Coinbase hatası: {e}"
+
+
+@st.cache_data(ttl=60)
+def get_ohlc_bybit(symbol: str, interval: str = "60", limit: int = 200):
+    """
+    Bybit v5 market kline
+    GET /v5/market/kline?category=linear&symbol=BTCUSDT&interval=60&limit=200
+    """
+    url = "https://api.bybit.com/v5/market/kline"
+    params = {
+        "category": "linear",
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        raw = r.json().get("result", {}).get("list", [])
+        if not raw:
+            return None, "Bybit API boş veri döndürdü."
+        data = []
+        # Dönüş: [startTime(ms), open, high, low, close, volume, turnover, ...]
+        raw_sorted = sorted(raw, key=lambda x: int(x[0]))
+        for k in raw_sorted[-limit:]:
+            ts = int(k[0])
+            open_, high, low, close = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+            volume = float(k[5])
+            data.append({
+                "time": pd.to_datetime(ts, unit="ms"),
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            })
+        df = pd.DataFrame(data).sort_values("time")
+        return df, None
+    except Exception as e:
+        return None, f"Bybit hatası: {e}"
+
+
+@st.cache_data(ttl=60)
+def get_ohlc_upbit(market: str, interval: str = "60", limit: int = 200):
+    """
+    Upbit OHLC verisi.
+    Dakikalık: /v1/candles/minutes/{unit}?market=USDT-BTC&count=200
+    Günlük:    /v1/candles/days?market=USDT-BTC&count=200
+    """
+    try:
+        if interval == "1d":
+            url = "https://api.upbit.com/v1/candles/days"
+            params = {"market": market, "count": limit}
+        else:
+            # interval -> minutes
+            upbit_unit_map = {
+                "1m": 1,
+                "5m": 5,
+                "15m": 15,
+                "1h": 60,
+                "4h": 240,
+            }
+            if interval not in upbit_unit_map:
+                return None, "Bu zaman dilimi Upbit için desteklenmiyor."
+            unit = upbit_unit_map[interval]
+            url = f"https://api.upbit.com/v1/candles/minutes/{unit}"
+            params = {"market": market, "count": limit}
+
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        raw = r.json()
+        if not raw:
+            return None, "Upbit API boş veri döndürdü."
+
+        # Upbit candles: en yeni → en eski
+        raw_sorted = sorted(raw, key=lambda x: x["timestamp"])
+        data = []
+        for k in raw_sorted[-limit:]:
+            ts = int(k["timestamp"])
+            open_ = float(k["opening_price"])
+            high = float(k["high_price"])
+            low = float(k["low_price"])
+            close = float(k["trade_price"])
+            volume = float(k["candle_acc_trade_volume"])
+            data.append({
+                "time": pd.to_datetime(ts, unit="ms"),
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+            })
+        df = pd.DataFrame(data).sort_values("time")
+        return df, None
+    except Exception as e:
+        return None, f"Upbit hatası: {e}"
 
 
 def compute_indicators(df: pd.DataFrame):
@@ -513,43 +611,6 @@ def create_live_market_figure(df: pd.DataFrame):
     return fig
 
 
-# === YENİ: FMP ECONOMIC CALENDAR (BUGÜN → +30 GÜN) ===========================
-@st.cache_data(ttl=900)
-def get_macro_events_fmp():
-    """
-    FinancialModelingPrep (FMP) Economic Calendar API üzerinden
-    bugün → +30 gün aralığındaki makro ekonomik verileri çeker.
-    """
-    api_key = st.secrets.get("FMP_API_KEY", None)
-    if not api_key:
-        return pd.DataFrame([])
-
-    today = datetime.utcnow().date()
-    future = today + timedelta(days=30)
-
-    url = (
-        "https://financialmodelingprep.com/api/v3/economic_calendar"
-        f"?from={today}&to={future}&apikey={api_key}"
-    )
-
-    try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-    except Exception:
-        return pd.DataFrame([])
-
-    df = pd.DataFrame(data)
-    if df.empty:
-        return df
-
-    # Tarih alanını normalize et
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.sort_values("date")
-    return df
-
-# ============================================================================
-
 def create_gauge_chart(value, label):
     if value < 25:
         color = "#ff4b4b"
@@ -662,6 +723,66 @@ def get_gemini_model(api_key: str, preferred_pattern: str):
 
     err_msg = f"Şu modeller denendi ama çalışmadı: {tried}. Son hata: {last_err}"
     return None, err_msg, None
+
+
+@st.cache_data(ttl=900)
+def get_macro_events_fmp():
+    """
+    FinancialModelingPrep (FMP) Economic Calendar API üzerinden
+    bugün → +30 gün aralığındaki makro ekonomik verileri çeker.
+    """
+    try:
+        api_key = st.secrets.get("FMP_API_KEY", None)
+    except Exception:
+        api_key = None
+
+    if not api_key:
+        # secrets içinde tanımlı değil
+        return pd.DataFrame([])
+
+    api_key = str(api_key).strip()
+    today = datetime.utcnow().date()
+    future = today + timedelta(days=30)
+
+    url = (
+        "https://financialmodelingprep.com/api/v3/economic_calendar"
+        f"?from={today}&to={future}&apikey={api_key}"
+    )
+
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            # Örneğin plan kısıtı / yanlış key vs.
+            return pd.DataFrame([])
+        data = r.json()
+    except Exception:
+        return pd.DataFrame([])
+
+    if not isinstance(data, list) or len(data) == 0:
+        return pd.DataFrame([])
+
+    df = pd.DataFrame(data)
+    if df.empty:
+        return df
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.sort_values("date")
+
+    # Kullanışlı kolon seçimi / yeniden adlandırma
+    col_map = {
+        "date": "date",
+        "country": "country",
+        "event": "event",
+        "impact": "impact",
+        "actual": "actual",
+        "previous": "previous",
+        "change": "change",
+        "changePercentage": "changePercentage"
+    }
+    keep_cols = [c for c in col_map.keys() if c in df.columns]
+    df = df[keep_cols].rename(columns=col_map)
+
+    return df
 
 
 def build_global_market_context():
@@ -827,6 +948,7 @@ def generate_ai_trade_plan(model, symbol: str, timeframe: str, balance: float,
     resp = model.generate_content(prompt)
     return resp.text if hasattr(resp, "text") else str(resp)
 
+
 # =============================================================================
 # 3. BASİT OTURUM AÇMA (APP_PASSWORD VARSA)
 # =============================================================================
@@ -849,6 +971,7 @@ def login_ui():
                 st.success("Giriş başarılı.")
             else:
                 st.error("Yanlış şifre.")
+
 
 require_auth = has_app_password()
 if require_auth and not st.session_state.authenticated:
@@ -1269,9 +1392,11 @@ with tab_tools:
 
         with cm1:
             st.markdown("##### Crypto Fear & Greed Index")
+
             if st.button("🔄 F&G Verisini Yenile"):
                 get_fear_and_greed_index.clear()
                 st.rerun()
+
             val, lbl, fetched_at = get_fear_and_greed_index()
             st.plotly_chart(create_gauge_chart(val, lbl), use_container_width=True)
             st.caption(
@@ -1280,7 +1405,7 @@ with tab_tools:
             )
 
         with cm2:
-            tab1, tab2 = st.tabs(["Kripto Piyasa Özeti", "Makro Gündem (+30g)"])
+            tab1, tab2 = st.tabs(["Kripto Piyasa Özeti", "Makro Gündem"])
             with tab1:
                 mkt = get_crypto_market_overview()
                 if not mkt:
@@ -1314,41 +1439,66 @@ with tab_tools:
                         "Veri kaynağı: CoinGecko Global API  \n"
                         f"Güncelleme zamanı (UTC): {mkt['fetched_at'].strftime('%Y-%m-%d %H:%M:%S')}"
                     )
+
             with tab2:
-                st.markdown("#### Yaklaşan Makro Veriler (FMP Economic Calendar, bugün → +30 gün)")
-                df = get_macro_events_fmp()
-                if df.empty:
-                    st.warning("Makro veri çekilemedi. `FMP_API_KEY` secrets ayarını kontrol et.")
+                st.markdown("#### Yaklaşan Makro Veriler (FMP Economic Calendar)")
+                df_macro = get_macro_events_fmp()
+                if df_macro.empty:
+                    st.warning("Makro veri çekilemedi. FMP_API_KEY secrets ayarını ve FMP planını kontrol et.")
                 else:
-                    # İlk 40 olayı gösterelim ki ekran patlamasın
-                    df_show = df.head(40)
+                    # En fazla 30–40 satır gösterelim
+                    df_show = df_macro.head(40)
                     for _, r in df_show.iterrows():
-                        date_str = r["date"].strftime("%d %b %Y %H:%M") if pd.notnull(r["date"]) else ""
-                        country = r.get("country", "") or ""
-                        event = r.get("event", "") or ""
-                        actual = r.get("actual", "—")
-                        estimate = r.get("estimate", r.get("forecast", "—"))
-                        previous = r.get("previous", "—")
+                        date_val = r["date"]
+                        if pd.isna(date_val):
+                            continue
+                        date_str = date_val.strftime("%d %b %Y")
+                        country = r.get("country", "")
+                        event = r.get("event", "")
                         impact = r.get("impact", "")
+                        actual = r.get("actual", "")
+                        previous = r.get("previous", "")
+                        chg = r.get("change", "")
+                        chg_pct = r.get("changePercentage", "")
 
-                        badge = f" ({impact})" if impact else ""
-                        st.info(
-                            f"**{date_str} – {country}{badge}**  \n"
-                            f"**Olay:** {event}  \n"
-                            f"Gerçekleşen: `{actual}` | Beklenti: `{estimate}` | Önceki: `{previous}`"
-                        )
-                    st.caption("Kaynak: FinancialModelingPrep Economic Calendar API")
+                        impact_label = (impact or "").capitalize()
+                        badge = f"{country} - {impact_label}" if country else impact_label
 
-# ------------------------ TAB 3: CANLI MARKET ANALİZİ (BINANCE / OKX + FALLBACK) ------------------------ #
+                        msg = f"**{date_str}** - {event}"
+                        if badge:
+                            msg += f"  \n*{badge}*"
+
+                        detail_parts = []
+                        if actual not in ("", None):
+                            detail_parts.append(f"Actual: {actual}")
+                        if previous not in ("", None):
+                            detail_parts.append(f"Previous: {previous}")
+                        if chg not in ("", None):
+                            detail_parts.append(f"Change: {chg}")
+                        if chg_pct not in ("", None):
+                            detail_parts.append(f"Change %: {chg_pct}")
+
+                        if detail_parts:
+                            msg += "  \n" + ", ".join(detail_parts)
+
+                        st.warning(msg)
+
+# ------------------------ TAB 3: CANLI MARKET ANALİZİ ------------------------ #
 with tab_live:
-    st.markdown("### 📊 Canlı Market Analizi (Binance / OKX OHLC + İndikatörler)")
+    st.markdown("### 📊 Canlı Market Analizi (Binance / OKX / Coinbase / Bybit / Upbit OHLC + İndikatörler)")
+
+    # 15 sn'de bir otomatik yenileme (paket varsa)
+    if st_autorefresh is not None:
+        st_autorefresh(interval=15_000, key="auto_refresh_live_tab")
+    else:
+        st.caption("⏱ Otomatik 15 sn'de bir yenileme için `requirements.txt` içine `streamlit-autorefresh` ekleyebilirsin.")
 
     with st.expander("📥 Borsa Verisi + RSI / MACD / EMA / Bollinger", expanded=True):
         c1, c2, c3 = st.columns(3)
 
         exchange_live = c1.selectbox(
             "Borsa",
-            options=["Binance", "OKX"],
+            options=["Binance", "OKX", "Coinbase", "Bybit", "Upbit"],
             index=0
         )
 
@@ -1389,6 +1539,7 @@ with tab_live:
             help="Ne kadar çok mum, o kadar uzun tarihsel görünüm."
         )
 
+        # Sembol/market map'leri
         binance_symbol_map = {
             "Bitcoin (BTC)": "BTCUSDT",
             "Ethereum (ETH)": "ETHUSDT",
@@ -1403,6 +1554,7 @@ with tab_live:
             "Shiba Inu (SHIB)": "SHIBUSDT",
             "Optimism (OP)": "OPUSDT",
             "Arbitrum (ARB)": "ARBUSDT",
+            # Pi Network Binance'te yok, o yüzden koymuyoruz
         }
 
         okx_inst_map = {
@@ -1422,21 +1574,55 @@ with tab_live:
             "Pi Network (PI)": "PI-USDT",
         }
 
-        coingecko_id_map = {
-            "Bitcoin (BTC)": "bitcoin",
-            "Ethereum (ETH)": "ethereum",
-            "BNB": "binancecoin",
-            "Solana (SOL)": "solana",
-            "XRP": "ripple",
-            "Dogecoin (DOGE)": "dogecoin",
-            "Cardano (ADA)": "cardano",
-            "Toncoin (TON)": "toncoin",
-            "Chainlink (LINK)": "chainlink",
-            "Pepe (PEPE)": "pepe",
-            "Shiba Inu (SHIB)": "shiba-inu",
-            "Optimism (OP)": "optimism",
-            "Arbitrum (ARB)": "arbitrum",
-            "Pi Network (PI)": "pi-network",
+        coinbase_product_map = {
+            "Bitcoin (BTC)": "BTC-USD",
+            "Ethereum (ETH)": "ETH-USD",
+            "BNB": None,  # Coinbase'te olmayabilir
+            "Solana (SOL)": "SOL-USD",
+            "XRP": "XRP-USD",
+            "Dogecoin (DOGE)": "DOGE-USD",
+            "Cardano (ADA)": "ADA-USD",
+            "Toncoin (TON)": None,
+            "Chainlink (LINK)": "LINK-USD",
+            "Pepe (PEPE)": None,
+            "Shiba Inu (SHIB)": "SHIB-USD",
+            "Optimism (OP)": None,
+            "Arbitrum (ARB)": None,
+            "Pi Network (PI)": None,
+        }
+
+        bybit_symbol_map = {
+            "Bitcoin (BTC)": "BTCUSDT",
+            "Ethereum (ETH)": "ETHUSDT",
+            "BNB": "BNBUSDT",
+            "Solana (SOL)": "SOLUSDT",
+            "XRP": "XRPUSDT",
+            "Dogecoin (DOGE)": "DOGEUSDT",
+            "Cardano (ADA)": "ADAUSDT",
+            "Toncoin (TON)": "TONUSDT",
+            "Chainlink (LINK)": "LINKUSDT",
+            "Pepe (PEPE)": "PEPEUSDT",
+            "Shiba Inu (SHIB)": "SHIBUSDT",
+            "Optimism (OP)": "OPUSDT",
+            "Arbitrum (ARB)": "ARBUSDT",
+            # Pi Network Bybit'te yok olabilir
+        }
+
+        upbit_market_map = {
+            "Bitcoin (BTC)": "USDT-BTC",
+            "Ethereum (ETH)": "USDT-ETH",
+            "BNB": "USDT-BNB",
+            "Solana (SOL)": "USDT-SOL",
+            "XRP": "USDT-XRP",
+            "Dogecoin (DOGE)": "USDT-DOGE",
+            "Cardano (ADA)": "USDT-ADA",
+            "Toncoin (TON)": "USDT-TON",
+            "Chainlink (LINK)": "USDT-LINK",
+            "Pepe (PEPE)": None,
+            "Shiba Inu (SHIB)": "USDT-SHIB",
+            "Optimism (OP)": None,
+            "Arbitrum (ARB)": None,
+            "Pi Network (PI)": None,
         }
 
         okx_bar_map = {
@@ -1448,37 +1634,72 @@ with tab_live:
             "1d": "1D",
         }
 
+        coinbase_granularity_map = {
+            "1m": 60,
+            "5m": 300,
+            "15m": 900,
+            "1h": 3600,
+            "4h": 14400,
+            "1d": 86400,
+        }
+
+        bybit_interval_map = {
+            "1m": "1",
+            "5m": "5",
+            "15m": "15",
+            "1h": "60",
+            "4h": "240",
+            "1d": "D",
+        }
+
         if st.button("📥 Veriyi Çek ve Hesapla", key="live_fetch"):
             with st.spinner("Veriler çekiliyor ve indikatörler hesaplanıyor..."):
                 df_ohlc = None
-                primary_error = None
-                fallback_error = None
+                error_msg = None
 
                 if exchange_live == "Binance":
-                    if coin_choice not in binance_symbol_map:
-                        primary_error = "Bu coin için Binance OHLC verisi desteklenmiyor (örneğin Pi Network)."
+                    symbol = binance_symbol_map.get(coin_choice)
+                    if not symbol:
+                        error_msg = "Bu coin için Binance sembolü tanımlı değil."
                     else:
-                        symbol = binance_symbol_map[coin_choice]
-                        df_ohlc, primary_error = get_ohlc_binance(symbol, interval=interval, limit=limit)
-                else:
-                    if coin_choice not in okx_inst_map:
-                        primary_error = "Bu coin için OKX OHLC verisi desteklenmiyor."
-                    else:
-                        inst_id = okx_inst_map[coin_choice]
-                        bar = okx_bar_map[interval]
-                        df_ohlc, primary_error = get_ohlc_okx(inst_id, bar=bar, limit=limit)
+                        df_ohlc, error_msg = get_ohlc_binance(symbol, interval=interval, limit=limit)
 
-                if df_ohlc is None:
-                    coin_id = coingecko_id_map.get(coin_choice)
-                    if coin_id:
-                        df_ohlc, fallback_error = get_ohlc_coingecko(coin_id, interval_hint=interval, limit=limit)
+                elif exchange_live == "OKX":
+                    inst_id = okx_inst_map.get(coin_choice)
+                    if not inst_id:
+                        error_msg = "Bu coin için OKX enstrümanı tanımlı değil."
+                    else:
+                        bar = okx_bar_map[interval]
+                        df_ohlc, error_msg = get_ohlc_okx(inst_id, bar=bar, limit=limit)
+
+                elif exchange_live == "Coinbase":
+                    product_id = coinbase_product_map.get(coin_choice)
+                    if not product_id:
+                        error_msg = "Bu coin için Coinbase ürünü tanımlı değil."
+                    else:
+                        granularity = coinbase_granularity_map[interval]
+                        df_ohlc, error_msg = get_ohlc_coinbase(product_id, granularity=granularity, limit=limit)
+
+                elif exchange_live == "Bybit":
+                    symbol = bybit_symbol_map.get(coin_choice)
+                    if not symbol:
+                        error_msg = "Bu coin için Bybit sembolü tanımlı değil."
+                    else:
+                        by_interval = bybit_interval_map[interval]
+                        df_ohlc, error_msg = get_ohlc_bybit(symbol, interval=by_interval, limit=limit)
+
+                elif exchange_live == "Upbit":
+                    market = upbit_market_map.get(coin_choice)
+                    if not market:
+                        error_msg = "Bu coin için Upbit marketi tanımlı değil."
+                    else:
+                        up_interval = "1d" if interval == "1d" else interval
+                        df_ohlc, error_msg = get_ohlc_upbit(market, interval=up_interval, limit=limit)
 
                 if df_ohlc is None or df_ohlc.empty:
                     msg = "OHLC verisi alınamadı."
-                    if primary_error:
-                        msg += f" Ana kaynak hata: {primary_error}"
-                    if fallback_error:
-                        msg += f" Fallback (CoinGecko) hata: {fallback_error}"
+                    if error_msg:
+                        msg += f" Detay: {error_msg}"
                     st.error(msg)
                 else:
                     df_ind = compute_indicators(df_ohlc)
@@ -1487,16 +1708,16 @@ with tab_live:
 
                     last = df_ind.iloc[-1]
                     colX, colY, colZ = st.columns(3)
-                    colX.metric("Son Kapanış", f"{last['close']:.4f} USDT")
+                    colX.metric("Son Kapanış", f"{last['close']:.4f}")
                     if not np.isnan(last.get("ema20", np.nan)):
                         colY.metric("EMA 20", f"{last['ema20']:.4f}")
                     if not np.isnan(last.get("rsi14", np.nan)):
                         colZ.metric("RSI 14", f"{last['rsi14']:.2f}")
 
-                    if primary_error:
-                        st.info("Ana borsa kaynağı başarısız oldu, CoinGecko OHLC fallback kullanıldı.")
+                    if error_msg:
+                        st.info(f"Uyarı: {error_msg}")
                     st.caption(
-                        f"Veri kaynağı: {exchange_live} veya fallback CoinGecko • Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa arayüzü değildir."
+                        f"Veri kaynağı: {exchange_live} • Bu bölüm eğitim amaçlıdır; gerçek zamanlı borsa arayüzü değildir."
                     )
 
 # ------------------------ TAB 4: AI TRADE PLANLAYICI ------------------------ #
