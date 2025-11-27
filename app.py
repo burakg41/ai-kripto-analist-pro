@@ -474,14 +474,61 @@ def create_live_market_figure(df: pd.DataFrame):
     return fig
 
 # -----------------------------------------------------------------------------
-# FMP ECONOMIC CALENDAR (GÜNCELLENMİŞ V4 ENDPOINT)
+# FMP ECONOMIC CALENDAR (GÜNCELLENMİŞ V4 ENDPOINT + MOCK DATA FALLBACK)
 # -----------------------------------------------------------------------------
+
+def generate_mock_macro_data(start_date, days=30):
+    """
+    FMP API yetkisi olmadığında (403/401) arayüzün bozulmaması için
+    rastgele demo verileri üretir.
+    """
+    data = []
+    # Örnek olay havuzu
+    events_pool = [
+        ("US", "FED Faiz Kararı", "High"),
+        ("US", "Tarım Dışı İstihdam", "High"),
+        ("EU", "ECB Faiz Kararı", "High"),
+        ("US", "TÜFE (Yıllık)", "High"),
+        ("TR", "TCMB Faiz Kararı", "High"),
+        ("US", "Ham Petrol Stokları", "Medium"),
+        ("US", "İşsizlik Hak. Yar. Başv.", "Medium"),
+        ("DE", "Almanya TÜFE", "Medium"),
+        ("CN", "Çin GSYİH Büyümesi", "High"),
+    ]
+    
+    current = start_date
+    # Gelecek 15 gün içine serpiştirilmiş 10-12 tane veri oluştur
+    num_events = 12
+    for _ in range(num_events):
+        # Rastgele +1..30 gün ekle
+        dt = current + timedelta(days=np.random.randint(1, days))
+        country, event, impact = events_pool[np.random.randint(0, len(events_pool))]
+        
+        # Gerçekçi görünen demo değerler
+        prev_val = f"{np.random.uniform(2.0, 5.5):.1f}%"
+        est_val = f"{np.random.uniform(2.0, 5.5):.1f}%"
+        
+        data.append({
+            "date": dt,
+            "country": country,
+            "event": f"{event} (DEMO)",
+            "actual": None,   # Gelecek veri olduğu için actual boş
+            "previous": prev_val,
+            "estimate": est_val,
+            "impact": impact
+        })
+        
+    df = pd.DataFrame(data)
+    if "date" in df.columns:
+        df = df.sort_values("date")
+    return df
 
 @st.cache_data(ttl=900)
 def get_fmp_macro_calendar(days_ahead: int = 30):
     """
     FMP Economic Calendar API'den bugünden +days_ahead güne kadar makro verileri çeker.
-    ENDPOINT GÜNCELLENDİ: v3 legacy yerine v4 kullanılıyor.
+    ENDPOINT: v4/economic-calendar
+    FALLBACK: 403 hatası alınırsa DEMO veri döner.
     Dönüş: (DataFrame veya None, error_message veya None)
     """
     try:
@@ -489,16 +536,14 @@ def get_fmp_macro_calendar(days_ahead: int = 30):
     except Exception:
         api_key = ""
 
+    # API Key hiç yoksa bile direkt hata vermek yerine demo veri deneyebiliriz veya uyarı dönebiliriz.
+    # Şimdilik kullanıcı key girmediyse uyarı verelim.
     if not api_key:
-        return None, "FMP_API_KEY secrets ayarını bulamadım. Streamlit Cloud'da tanımlı mı kontrol et."
+        return None, "FMP_API_KEY secrets ayarını bulamadım. Demo moduna geçmek için koda müdahale gerekebilir."
 
     today = datetime.utcnow().date()
     end_date = today + timedelta(days=days_ahead)
 
-    # -------------------------------------------------------------------------
-    # DÜZELTME: Eski URL: .../api/v3/economic_calendar (HATA VERİYORDU)
-    # Yeni URL: .../api/v4/economic-calendar (STANDART ENDPOINT)
-    # -------------------------------------------------------------------------
     url = "https://financialmodelingprep.com/api/v4/economic-calendar"
     
     params = {
@@ -512,8 +557,11 @@ def get_fmp_macro_calendar(days_ahead: int = 30):
     except Exception as e:
         return None, f"FMP isteği atılırken hata: {e}"
 
-    if r.status_code == 403:
-        return None, "API Yetki Hatası (403): Kullanılan API anahtarı 'Economic Calendar' endpoint'ini kapsamıyor veya limit dolu. Ücretsiz planda bu veri kısıtlanmış olabilir."
+    # 403 veya 401: Yetki hatası -> DEMO MODE FALLBACK
+    if r.status_code in [401, 403]:
+        # Hata yerine demo veriyi dönüyoruz, error_message kısmına özel bir flag koyuyoruz.
+        df_mock = generate_mock_macro_data(today, days_ahead)
+        return df_mock, "DEMO_MODE"
     
     if r.status_code != 200:
         txt = r.text
@@ -530,6 +578,7 @@ def get_fmp_macro_calendar(days_ahead: int = 30):
         return None, f"Beklenmeyen JSON formatı: {str(data)[:200]}"
 
     if not data:
+        # Veri boşsa (tatil vs.) boş df dön
         return pd.DataFrame(), None
 
     df = pd.DataFrame(data)
@@ -1318,15 +1367,24 @@ with tab_tools:
                 st.markdown("#### Yaklaşan Makro Veriler (FMP Economic Calendar)")
                 df_macro, macro_err = get_fmp_macro_calendar(days_ahead=30)
 
-                if macro_err:
+                # DÜZELTME: Özel DEMO_MODE hatasını yakalayıp sadece uyarı gösteriyoruz, veri tablosunu gizlemiyoruz
+                if macro_err == "DEMO_MODE":
+                    st.warning("⚠️ FMP API limiti/yetkisi nedeniyle DEMO (Rastgele) veriler gösteriliyor.")
+                    show_table = True
+                elif macro_err:
                     st.error(
                         "Makro veri çekilemedi. Detay: "
                         + macro_err
                         + "  \n\n• `FMP_API_KEY` değerinin Streamlit secrets'da doğru yazıldığından emin ol."
                     )
+                    show_table = False
                 elif df_macro is None or df_macro.empty:
                     st.info("Belirlenen tarih aralığı için FMP ekonomik takvim verisi bulunamadı veya paket kapsamı dışı.")
+                    show_table = False
                 else:
+                    show_table = True
+
+                if show_table and df_macro is not None and not df_macro.empty:
                     # Çok uzun olmaması için ilk 80 kaydı gösterelim
                     df_show = df_macro.head(80)
                     for _, r in df_show.iterrows():
