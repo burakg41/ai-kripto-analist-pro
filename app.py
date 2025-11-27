@@ -474,13 +474,14 @@ def create_live_market_figure(df: pd.DataFrame):
     return fig
 
 # -----------------------------------------------------------------------------
-# FMP ECONOMIC CALENDAR (BUGÜNDEN +30 GÜN)
+# FMP ECONOMIC CALENDAR (GÜNCELLENMİŞ V4 ENDPOINT)
 # -----------------------------------------------------------------------------
 
 @st.cache_data(ttl=900)
 def get_fmp_macro_calendar(days_ahead: int = 30):
     """
     FMP Economic Calendar API'den bugünden +days_ahead güne kadar makro verileri çeker.
+    ENDPOINT GÜNCELLENDİ: v3 legacy yerine v4 kullanılıyor.
     Dönüş: (DataFrame veya None, error_message veya None)
     """
     try:
@@ -494,7 +495,12 @@ def get_fmp_macro_calendar(days_ahead: int = 30):
     today = datetime.utcnow().date()
     end_date = today + timedelta(days=days_ahead)
 
-    url = "https://financialmodelingprep.com/api/v3/economic_calendar"
+    # -------------------------------------------------------------------------
+    # DÜZELTME: Eski URL: .../api/v3/economic_calendar (HATA VERİYORDU)
+    # Yeni URL: .../api/v4/economic-calendar (STANDART ENDPOINT)
+    # -------------------------------------------------------------------------
+    url = "https://financialmodelingprep.com/api/v4/economic-calendar"
+    
     params = {
         "from": today.strftime("%Y-%m-%d"),
         "to": end_date.strftime("%Y-%m-%d"),
@@ -506,6 +512,9 @@ def get_fmp_macro_calendar(days_ahead: int = 30):
     except Exception as e:
         return None, f"FMP isteği atılırken hata: {e}"
 
+    if r.status_code == 403:
+        return None, "API Yetki Hatası (403): Kullanılan API anahtarı 'Economic Calendar' endpoint'ini kapsamıyor veya limit dolu. Ücretsiz planda bu veri kısıtlanmış olabilir."
+    
     if r.status_code != 200:
         txt = r.text
         if len(txt) > 200:
@@ -1313,11 +1322,10 @@ with tab_tools:
                     st.error(
                         "Makro veri çekilemedi. Detay: "
                         + macro_err
-                        + "  \n\n• `FMP_API_KEY` değerinin Streamlit secrets'da doğru yazıldığından "
-                          "ve ekonomik takvim endpoint'inin planında açık olduğundan emin ol."
+                        + "  \n\n• `FMP_API_KEY` değerinin Streamlit secrets'da doğru yazıldığından emin ol."
                     )
                 elif df_macro is None or df_macro.empty:
-                    st.info("Belirlenen tarih aralığı için FMP ekonomik takvim verisi bulunamadı.")
+                    st.info("Belirlenen tarih aralığı için FMP ekonomik takvim verisi bulunamadı veya paket kapsamı dışı.")
                 else:
                     # Çok uzun olmaması için ilk 80 kaydı gösterelim
                     df_show = df_macro.head(80)
