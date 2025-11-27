@@ -7,6 +7,14 @@ import google.generativeai as genai
 from PIL import Image
 from datetime import datetime, timedelta, date
 import numpy as np
+from io import StringIO
+
+# BeautifulSoup kontrolü (Scraping için gerekli)
+try:
+    from bs4 import BeautifulSoup
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
 
 # =============================================================================
 # 1. GENEL AYARLAR
@@ -474,19 +482,79 @@ def create_live_market_figure(df: pd.DataFrame):
     return fig
 
 # -----------------------------------------------------------------------------
-# FMP ECONOMIC CALENDAR (GÜNCELLENMİŞ V4 ENDPOINT - DEMO VERİ KALDIRILDI)
+# INVESTING.COM SCRAPING (YENİ - ÜCRETSİZ YÖNTEM)
+# -----------------------------------------------------------------------------
+
+@st.cache_data(ttl=600)
+def get_macro_data_scraping():
+    """
+    Investing.com veya benzeri bir siteden ekonomik takvimi kazır (scraping).
+    FMP API yerine ücretsiz alternatif olarak kullanılır.
+    """
+    if not BS4_AVAILABLE:
+        return None, "⚠️ 'beautifulsoup4' kütüphanesi yüklü değil. Lütfen terminalde 'pip install beautifulsoup4' komutunu çalıştırın veya requirements.txt dosyanıza ekleyin."
+
+    url = "https://www.investing.com/economic-calendar/"
+    
+    # Tarayıcı gibi görünmek için User-Agent şart
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return None, f"Siteye erişilemedi (HTTP {response.status_code}). Cloudflare korumasına takılmış olabilir."
+
+        # Pandas read_html ile tabloları okumayı dene (en kolay yöntem)
+        # read_html lxml veya bs4 gerektirir
+        try:
+            dfs = pd.read_html(StringIO(response.text))
+        except ValueError:
+            return None, "Sayfada okunabilir bir tablo bulunamadı."
+        
+        # Investing.com'da genellikle en büyük tablo takvimdir
+        calendar_df = None
+        for df in dfs:
+            # Basit bir kontrol: 'Time', 'Cur.', 'Imp.', 'Event' sütunlarına benzer sütunlar var mı?
+            # Sütun isimleri bazen NaN veya farklı olabilir, içeriğe bakalım
+            if len(df) > 5 and df.shape[1] >= 5:
+                calendar_df = df
+                break
+        
+        if calendar_df is None:
+            return None, "Ekonomik takvim tablosu ayrıştırılamadı."
+
+        # Sütun temizliği (Investing.com tablosu bazen karmaşık gelir)
+        # Genellikle: Time, Cur., Imp., Event, Actual, Forecast, Previous
+        # İlk satırlar bazen header olur, bazen olmaz. Basitçe ilk 5-6 sütunu alalım.
+        df_clean = calendar_df.iloc[:, :7].copy()
+        
+        # Kolon isimlerini standartlaştıralım (tahmini)
+        new_cols = ["Time", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]
+        if df_clean.shape[1] >= 7:
+            df_clean.columns = new_cols
+        else:
+            # Eğer sütun sayısı azsa, olduğu gibi bırakıp sadece ilk birkaçını gösterelim
+            df_clean.columns = [f"Col_{i}" for i in range(df_clean.shape[1])]
+
+        # NaN satırları temizle
+        df_clean = df_clean.dropna(subset=[df_clean.columns[3]]) # Event kısmı boş olmasın
+
+        return df_clean, None
+
+    except Exception as e:
+        return None, f"Scraping hatası: {str(e)}"
+
+# -----------------------------------------------------------------------------
+# FMP ECONOMIC CALENDAR (YEDEK OLARAK KORUNDU)
 # -----------------------------------------------------------------------------
 
 @st.cache_data(ttl=900)
 def get_fmp_macro_calendar(days_ahead: int = 30):
     """
-    FMP Economic Calendar API'den bugünden +days_ahead güne kadar makro verileri çeker.
-    ENDPOINT: v4/economic-calendar
-    
-    ÖNEMLİ NOT: "Economic Calendar" verisi genellikle ücretli/FMP özel planlara dahildir.
-    Ücretsiz key ile 403 hatası alınırsa, DEMO VERİ ÜRETİLMEZ, DOĞRUDAN HATA DÖNÜLÜR.
-    
-    Dönüş: (DataFrame veya None, error_message veya None)
+    YEDEK FONKSİYON: FMP Economic Calendar API.
+    Eğer kullanıcı paket satın alırsa bu fonksiyon tekrar devreye alınabilir.
     """
     try:
         api_key = st.secrets.get("FMP_API_KEY", "").strip()
@@ -494,50 +562,29 @@ def get_fmp_macro_calendar(days_ahead: int = 30):
         api_key = ""
 
     if not api_key:
-        return None, "FMP_API_KEY secrets ayarını bulamadım. Veri çekmek için geçerli bir API anahtarı giriniz."
+        return None, "FMP_API_KEY bulunamadı."
 
     today = datetime.utcnow().date()
     end_date = today + timedelta(days=days_ahead)
-
     url = "https://financialmodelingprep.com/api/v4/economic-calendar"
-    
     params = {
         "from": today.strftime("%Y-%m-%d"),
         "to": end_date.strftime("%Y-%m-%d"),
         "apikey": api_key,
     }
-
     try:
         r = requests.get(url, params=params, timeout=10)
-    except Exception as e:
-        return None, f"FMP isteği atılırken hata: {e}"
-
-    # Yetki hatası durumunda artık "demo" üretmiyoruz, gerçeği söylüyoruz.
-    if r.status_code in [401, 403]:
-        return None, f"API Yetki Hatası ({r.status_code}): Girdiğiniz API anahtarı 'Economic Calendar' verisine erişim sağlamıyor. Lütfen planınızı kontrol edin veya geçerli bir anahtar kullanın."
-    
-    if r.status_code != 200:
-        txt = r.text
-        if len(txt) > 200:
-            txt = txt[:200] + "..."
-        return None, f"FMP HTTP {r.status_code} – yanıt: {txt}"
-
-    try:
+        if r.status_code != 200:
+            return None, f"FMP Hatası: {r.status_code}"
         data = r.json()
+        if not data: return pd.DataFrame(), None
+        df = pd.DataFrame(data)
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date")
+        return df, None
     except Exception as e:
-        return None, f"JSON parse hatası: {e}"
-
-    if not isinstance(data, list):
-        return None, f"Beklenmeyen JSON formatı: {str(data)[:200]}"
-
-    if not data:
-        return pd.DataFrame(), None
-
-    df = pd.DataFrame(data)
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"])
-        df = df.sort_values("date")
-    return df, None
+        return None, str(e)
 
 # -----------------------------------------------------------------------------
 # F&G GAUGE
@@ -1316,59 +1363,32 @@ with tab_tools:
                     )
 
             with tab2:
-                st.markdown("#### Yaklaşan Makro Veriler (FMP Economic Calendar)")
-                df_macro, macro_err = get_fmp_macro_calendar(days_ahead=30)
+                st.markdown("#### Yaklaşan Makro Veriler (Investing.com Scraping)")
+                # ARTIK DOĞRUDAN SCRAPING FONKSİYONU ÇAĞRILIYOR
+                df_macro, macro_err = get_macro_data_scraping()
 
                 if macro_err:
                     st.error(
-                        "Makro veri çekilemedi. Detay: "
+                        "Makro veri çekilemedi (Scraping Başarısız). Detay: "
                         + macro_err
-                        + "  \n\n• `FMP_API_KEY` değerinin Streamlit secrets'da doğru yazıldığından emin ol."
+                        + "  \n\nℹ️ **Not:** Eğer scraping sürekli hata veriyorsa, FMP Starter/Premium paketine geçmek gerekebilir."
                     )
                     show_table = False
                 elif df_macro is None or df_macro.empty:
-                    st.info("Belirlenen tarih aralığı için FMP ekonomik takvim verisi bulunamadı veya paket kapsamı dışı.")
+                    st.info("Şu an için güncel ekonomik takvim verisi bulunamadı.")
                     show_table = False
                 else:
                     show_table = True
 
                 if show_table and df_macro is not None and not df_macro.empty:
-                    # Çok uzun olmaması için ilk 80 kaydı gösterelim
-                    df_show = df_macro.head(80)
-                    for _, r in df_show.iterrows():
-                        dt = r.get("date")
-                        if isinstance(dt, (datetime, pd.Timestamp)):
-                            dt_str = dt.strftime("%d %b %Y %H:%M")
-                        else:
-                            dt_str = str(dt)
-
-                        country = r.get("country", "") or ""
-                        event = r.get("event", "") or ""
-                        actual = r.get("actual", None)
-                        previous = r.get("previous", None)
-                        estimate = r.get("estimate", None)
-                        impact = r.get("impact", "") or ""
-
-                        line = f"{dt_str} - {country} - {event}"
-
-                        details = []
-                        if impact:
-                            details.append(f"Impact: {impact}")
-                        if estimate is not None:
-                            details.append(f"Beklenti: {estimate}")
-                        if actual is not None:
-                            details.append(f"Gerçekleşen: {actual}")
-                        if previous is not None:
-                            details.append(f"Önceki: {previous}")
-
-                        text = line + ("\n\n" + " | ".join(details) if details else "")
-
-                        if "High" in str(impact) or "high" in str(impact):
-                            st.error(text)
-                        elif "Medium" in str(impact) or "medium" in str(impact):
-                            st.warning(text)
-                        else:
-                            st.info(text)
+                    # Dataframe'i ekranda gösterelim
+                    # Sütun isimlerini daha anlaşılır yapabiliriz veya olduğu gibi basabiliriz
+                    st.dataframe(
+                        df_macro, 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
+                    st.caption("Veri Kaynağı: Investing.com (Web Scraping ile alınmıştır, gecikmeli veya eksik olabilir.)")
 
 # ------------------------ TAB 3: CANLI MARKET ANALİZİ (BINANCE / OKX) ------------------------ #
 with tab_live:
